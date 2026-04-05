@@ -15,10 +15,9 @@ agent_loop.py — LLM Agent 对话循环
 """
 
 import json
-import base64
 import threading
-from dataclasses import dataclass, field
-from typing import Optional, Callable
+from dataclasses import dataclass
+from typing import Any, Callable, Optional, cast
 
 from .builtin_loader import BuiltinLoader
 from . import eval_core
@@ -37,6 +36,7 @@ class AgentConfig:
 # ── Tool 定义（eval_python_code）────────────────────────────────────────────
 
 EVAL_TOOL_NAME = "eval_python_code"
+ToolResultContent = str | list[dict[str, Any]]
 
 def build_tool_definition(summaries: str) -> dict:
     return {
@@ -197,7 +197,10 @@ class BlenderAgent:
                         result_content = f"{doc_text}\n\n[执行结果]\n{result_content}"
                     else:
                         # 多模态 content：在最前面插入文档文本块
-                        result_content = [{"type": "text", "text": f"{doc_text}\n\n[执行结果]"}] + result_content
+                        result_content = [
+                            {"type": "text", "text": f"{doc_text}\n\n[执行结果]"},
+                            *result_content,
+                        ]
 
                 if on_tool_result:
                     on_tool_result(
@@ -220,14 +223,19 @@ class BlenderAgent:
         return "[已达到最大迭代次数，Agent 停止]"
 
     @staticmethod
-    def _format_result(raw) -> object:
+    def _format_result(raw: object) -> ToolResultContent:
         """
         将执行结果转换为可传给 LLM 的格式。
         若结果含 'screenshot'（base64 PNG），构建多模态 content。
         """
-        if isinstance(raw, dict) and "screenshot" in raw:
-            b64 = raw.pop("screenshot")
-            text_part = json.dumps(raw, ensure_ascii=False, default=str) if raw else ""
+        if isinstance(raw, dict):
+            raw_dict = cast(dict[str, object], raw)
+        else:
+            raw_dict = None
+
+        if raw_dict is not None and "screenshot" in raw_dict:
+            b64 = raw_dict.pop("screenshot")
+            text_part = json.dumps(raw_dict, ensure_ascii=False, default=str) if raw_dict else ""
             content = []
             if text_part:
                 content.append({"type": "text", "text": text_part})
@@ -236,8 +244,8 @@ class BlenderAgent:
                 "image_url": {"url": f"data:image/png;base64,{b64}"},
             })
             return content  # OpenAI 多模态 content 格式
-        if isinstance(raw, dict) and "error" in raw:
-            return f"[执行错误]\n{raw['error']}"
+        if raw_dict is not None and "error" in raw_dict:
+            return f"[执行错误]\n{raw_dict['error']}"
         return json.dumps(raw, ensure_ascii=False, default=str) if not isinstance(raw, str) else raw
 
 
@@ -249,17 +257,24 @@ _loader: Optional[BuiltinLoader] = None
 
 def setup():
     global _agent, _loader
-    _loader = BuiltinLoader()
-    eval_core.setup(_loader)
+    if _loader is None:
+        _loader = BuiltinLoader()
+        eval_core.setup(_loader)
     eval_core.start_timer()
 
 
 def teardown():
+    global _agent, _loader
     eval_core.stop_timer()
+    _agent = None
+    _loader = None
 
 
 def get_agent(config: AgentConfig) -> BlenderAgent:
-    global _agent
+    global _agent, _loader
+    if _loader is None:
+        setup()
     if _agent is None or _agent.config != config:
+        assert _loader is not None
         _agent = BlenderAgent(config, _loader)
     return _agent

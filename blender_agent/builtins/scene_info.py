@@ -57,8 +57,8 @@ def get_hierarchy(collection_name: str = "") -> dict:
         coll = bpy.data.collections.get(collection_name)
         objects = list(coll.objects) if coll else []
     else:
+        assert bpy.context.scene is not None
         objects = list(bpy.context.scene.objects)
-
     def obj_to_node(obj):
         node = {
             "name": obj.name,
@@ -119,6 +119,7 @@ def find_objects(
 ) -> list:
     """在 Python 端过滤对象，返回名称列表，不污染上下文。"""
     results = []
+    assert bpy.context.scene is not None
     for obj in bpy.context.scene.objects:
         if type and obj.type != type:
             continue
@@ -140,8 +141,10 @@ def focus_object(name: str) -> bool:
     obj.hide_set(False)
     bpy.ops.object.select_all(action="DESELECT")
     obj.select_set(True)
+    assert bpy.context.view_layer is not None
     bpy.context.view_layer.objects.active = obj
     # 让 3D 视口聚焦
+    assert bpy.context.screen is not None
     for area in bpy.context.screen.areas:
         if area.type == "VIEW_3D":
             with bpy.context.temp_override(area=area):
@@ -161,6 +164,7 @@ def select_objects(names: list, deselect_all: bool = True):
     if names:
         last = bpy.data.objects.get(names[-1])
         if last:
+            assert bpy.context.view_layer is not None
             bpy.context.view_layer.objects.active = last
 
 

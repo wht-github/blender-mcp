@@ -12,7 +12,6 @@ builtin_loader.py — Builtins 发现与懒加载管理器
 import importlib
 import importlib.util
 import sys
-import os
 from pathlib import Path
 from types import ModuleType
 from typing import Optional
@@ -63,7 +62,7 @@ class BuiltinLoader:
         path = self._registry[name]
         module_name = f"blender_agent.builtins.{name}"
 
-        spec = importlib.util.spec_from_file_location(module_name, path)
+        spec = self._require_spec(path, module_name)
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
@@ -133,10 +132,17 @@ class BuiltinLoader:
         self._discover()
 
     @staticmethod
+    def _require_spec(path: Path, module_name: str):
+        spec = importlib.util.spec_from_file_location(module_name, path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Unable to create module spec for '{module_name}' from '{path}'")
+        return spec
+
+    @staticmethod
     def _read_attr(path: Path, attr: str) -> Optional[str]:
         """快速读取模块顶层变量，不执行整个模块。"""
         try:
-            spec = importlib.util.spec_from_file_location("_tmp", path)
+            spec = BuiltinLoader._require_spec(path, "_tmp")
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             return getattr(mod, attr, None)

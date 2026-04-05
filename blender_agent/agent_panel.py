@@ -5,12 +5,22 @@ agent_panel.py — Blender UI 面板
 提供：聊天输入框、对话历史展示、API 设置
 """
 
-import bpy
 import threading
-from bpy.props import StringProperty, BoolProperty, EnumProperty
-from bpy.types import Panel, Operator, AddonPreferences
+from typing import TYPE_CHECKING, Any, Protocol, cast
+
+import bpy
+from bpy.props import BoolProperty, StringProperty
+from bpy.types import AddonPreferences, Operator, Panel
 
 from .agent_loop import AgentConfig, get_agent
+
+
+class AgentScene(Protocol):
+    agent_input: str
+    agent_output: str
+    agent_running: bool
+    agent_last_code: str
+
 
 
 # ── 偏好设置（API Key 等）─────────────────────────────────────────────────────
@@ -18,29 +28,36 @@ from .agent_loop import AgentConfig, get_agent
 class BlenderAgentPreferences(AddonPreferences):
     bl_idname = __package__
 
-    api_key: StringProperty(
-        name="API Key",
-        description="LLM 服务商 API Key",
-        subtype="PASSWORD",
-        default="",
-    )
-    base_url: StringProperty(
-        name="Base URL",
-        description="OpenAI 兼容 API 地址",
-        default="https://api.openai.com/v1",
-    )
-    model: StringProperty(
-        name="Model",
-        description="模型名称，例如 gpt-4o、claude-opus-4-5",
-        default="gpt-4o",
-    )
-    system_prompt_extra: StringProperty(
-        name="额外系统提示",
-        description="追加到系统提示的自定义指令",
-        default="",
-    )
+    if TYPE_CHECKING:
+        api_key: str
+        base_url: str
+        model: str
+        system_prompt_extra: str
+    else:
+        api_key: StringProperty(
+            name="API Key",
+            description="LLM 服务商 API Key",
+            subtype="PASSWORD",
+            default="",
+        )
+        base_url: StringProperty(
+            name="Base URL",
+            description="OpenAI 兼容 API 地址",
+            default="https://api.openai.com/v1",
+        )
+        model: StringProperty(
+            name="Model",
+            description="模型名称，例如 gpt-4o、claude-opus-4-5",
+            default="gpt-4o",
+        )
+        system_prompt_extra: StringProperty(
+            name="额外系统提示",
+            description="追加到系统提示的自定义指令",
+            default="",
+        )
 
     def draw(self, context):
+        assert self.layout is not None
         layout = self.layout
         layout.prop(self, "api_key")
         layout.prop(self, "base_url")
@@ -51,24 +68,26 @@ class BlenderAgentPreferences(AddonPreferences):
 # ── 场景属性（对话状态）──────────────────────────────────────────────────────
 
 def register_scene_props():
-    bpy.types.Scene.agent_input = StringProperty(
+    scene_type = cast(Any, bpy.types.Scene)
+    scene_type.agent_input = StringProperty(
         name="",
         description="输入你的指令",
         default="",
     )
-    bpy.types.Scene.agent_output = StringProperty(
+    scene_type.agent_output = StringProperty(
         name="对话历史",
         default="",
     )
-    bpy.types.Scene.agent_running = BoolProperty(default=False)
-    bpy.types.Scene.agent_last_code = StringProperty(default="")
+    scene_type.agent_running = BoolProperty(default=False)
+    scene_type.agent_last_code = StringProperty(default="")
 
 
 def unregister_scene_props():
-    del bpy.types.Scene.agent_input
-    del bpy.types.Scene.agent_output
-    del bpy.types.Scene.agent_running
-    del bpy.types.Scene.agent_last_code
+    scene_type = cast(Any, bpy.types.Scene)
+    del scene_type.agent_input
+    del scene_type.agent_output
+    del scene_type.agent_running
+    del scene_type.agent_last_code
 
 
 # ── Operators ────────────────────────────────────────────────────────────────
@@ -79,7 +98,8 @@ class AGENT_OT_Send(Operator):
     bl_description = "发送指令给 AI Agent"
 
     def execute(self, context):
-        scene = context.scene
+        assert context.scene is not None
+        scene = cast(AgentScene, context.scene)
         user_msg = scene.agent_input.strip()
         if not user_msg:
             return {"CANCELLED"}
@@ -140,8 +160,10 @@ class AGENT_OT_Reset(Operator):
         )
         agent = get_agent(config)
         agent.reset()
-        context.scene.agent_output = ""
-        context.scene.agent_last_code = ""
+        assert context.scene is not None
+        scene = cast(AgentScene, context.scene)
+        scene.agent_output = ""
+        scene.agent_last_code = ""
         return {"FINISHED"}
 
 
@@ -159,8 +181,10 @@ class AGENT_PT_Main(Panel):
     bl_category = "AI Agent"
 
     def draw(self, context):
+        assert self.layout is not None
         layout = self.layout
-        scene = context.scene
+        assert context.scene is not None
+        scene = cast(AgentScene, context.scene)
 
         # 对话历史
         box = layout.box()

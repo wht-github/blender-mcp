@@ -46,10 +46,12 @@ blender_log builtin — 日志获取与过滤
 def get_info_log(limit: int = 50, filter_keyword: Optional[str] = None) -> list:
     """获取 Blender Info 区域日志，可按关键词过滤。"""
     logs = []
+    assert bpy.context.window_manager is not None
+    window_manager = bpy.context.window_manager
     # Blender 4.x：Info 日志通过报告存储在 window_manager 的 reports 中
     # 兜底方法：通过重定向 Info 区域读取
     try:
-        for report in bpy.context.window_manager.reports:
+        for report in window_manager.reports:
             entry = {
                 "type": str(report.type),
                 "message": report.message,
@@ -70,10 +72,11 @@ def get_info_log(limit: int = 50, filter_keyword: Optional[str] = None) -> list:
 def _read_info_area(limit: int) -> list:
     """备用：通过 Info 区域 space_data 读取日志。"""
     logs = []
-    for window in bpy.context.window_manager.windows:
+    assert bpy.context.window_manager is not None
+    window_manager = bpy.context.window_manager
+    for window in window_manager.windows:
         for area in window.screen.areas:
             if area.type == "INFO":
-                space = area.spaces.active
                 # INFO 区域无直接 Python API 获取文本，返回空
                 break
     return logs
@@ -83,8 +86,10 @@ def get_error_log(limit: int = 20) -> list:
     """返回最近的错误/警告类型日志。"""
     error_types = {"ERROR", "WARNING", "ERROR_INVALID_INPUT", "ERROR_INVALID_CONTEXT"}
     logs = []
+    assert bpy.context.window_manager is not None
+    window_manager = bpy.context.window_manager
     try:
-        for report in bpy.context.window_manager.reports:
+        for report in window_manager.reports:
             if str(report.type) in error_types:
                 logs.append({"type": str(report.type), "message": report.message})
     except AttributeError:

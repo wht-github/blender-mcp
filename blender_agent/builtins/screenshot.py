@@ -39,6 +39,7 @@ def capture_viewport(area_type: str = "VIEW_3D") -> str:
 
     try:
         # 找到目标区域
+        assert bpy.context.window_manager is not None
         target_area = None
         for window in bpy.context.window_manager.windows:
             for area in window.screen.areas:
@@ -50,7 +51,7 @@ def capture_viewport(area_type: str = "VIEW_3D") -> str:
 
         if target_area is None:
             # 回退：截取整个窗口
-            bpy.ops.screen.screenshot(filepath=tmp_path, full=True)
+            bpy.ops.screen.screenshot(filepath=tmp_path)
         else:
             # 覆盖上下文截取指定区域
             with bpy.context.temp_override(area=target_area):
@@ -63,32 +64,34 @@ def capture_viewport(area_type: str = "VIEW_3D") -> str:
             os.unlink(tmp_path)
 
 
-def capture_render(frame: int = None) -> str:
+def capture_render(frame: int | None = None) -> str:
     """渲染当前帧（或指定帧），返回 base64 PNG。"""
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         tmp_path = f.name
 
     try:
+        assert bpy.context.scene is not None
         scene = bpy.context.scene
         original_frame = scene.frame_current
         original_path = scene.render.filepath
         original_format = scene.render.image_settings.file_format
 
-        if frame is not None:
-            scene.frame_set(frame)
+        try:
+            if frame is not None:
+                scene.frame_set(frame)
 
-        scene.render.filepath = tmp_path
-        scene.render.image_settings.file_format = "PNG"
+            scene.render.filepath = tmp_path
+            scene.render.image_settings.file_format = "PNG"
 
-        bpy.ops.render.render(write_still=True)
+            bpy.ops.render.render(write_still=True)
 
-        scene.render.filepath = original_path
-        scene.render.image_settings.file_format = original_format
-        if frame is not None:
-            scene.frame_set(original_frame)
-
-        with open(tmp_path, "rb") as f:
-            return base64.b64encode(f.read()).decode("utf-8")
+            with open(tmp_path, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+        finally:
+            scene.render.filepath = original_path
+            scene.render.image_settings.file_format = original_format
+            if frame is not None:
+                scene.frame_set(original_frame)
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
