@@ -1,2 +1,6 @@
 .venv
 .vscode
+blender_agent/wheels/
+blender_agent/libs/
+__pycache__/
+*.pyc

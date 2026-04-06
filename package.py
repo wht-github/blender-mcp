@@ -26,6 +26,12 @@ def create_addon_zip(output_path: str = "blender_agent.zip"):
         output.unlink()
         print(f"已删除旧文件: {output}")
     
+    # 检查 libs 目录
+    libs_dir = addon_dir / "libs"
+    if not libs_dir.exists() or not any(libs_dir.iterdir()):
+        print("⚠ 警告: blender_agent/libs/ 目录不存在或为空！")
+        print("  请先运行: python download_wheels.py")
+
     # 创建 zip 文件
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
         for file_path in addon_dir.rglob("*"):
