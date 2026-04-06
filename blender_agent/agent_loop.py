@@ -27,8 +27,8 @@ from . import eval_core
 @dataclass
 class AgentConfig:
     api_key: str = ""
-    base_url: str = "https://api.openai.com/v1"
-    model: str = "gpt-4o"
+    base_url: str = "http://127.0.0.1:12000"
+    model: str = "kimi-for-coding"
     max_iterations: int = 20
     system_prompt_extra: str = ""  # 用户可在 Addon 设置中追加
 
