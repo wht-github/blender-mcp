@@ -2,5 +2,6 @@
 .vscode
 blender_agent/wheels/
 blender_agent/libs/
+blender_agent.zip
 __pycache__/
 *.pyc
