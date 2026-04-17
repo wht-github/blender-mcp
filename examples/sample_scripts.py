@@ -105,8 +105,43 @@ def execute():
 __result__ = execute()
 """
 
+
+
+# ── 示例 4：用 materials builtin 创建并分配材质 ─────────────────────────────────
+EXAMPLE_ASSIGN_MATERIALS = """
+def execute():
+    materials = get_builtin('materials')
+
+    materials.create_preset(
+        'Demo_Body_Red',
+        'painted_metal',
+        overrides={'base_color': (0.9, 0.15, 0.05, 1.0), 'metallic': 0.3, 'roughness': 0.3},
+    )
+    materials.create_preset('Demo_Glass', 'glass')
+    materials.create_preset('Demo_Rubber', 'rubber')
+
+    materials.apply_material_to_objects('Demo_Body_Red', ['Car body', 'door-left', 'door-right'])
+    materials.apply_material_to_objects(
+        'Demo_Rubber',
+        [
+            'wheel-front-right', 'wheel-front-left',
+            'wheel-front-right.001', 'wheel-front-left.001',
+            'wheel-back-right.001', 'wheel-back-left.001',
+        ],
+    )
+
+    return {
+        'body': materials.get_material_info('Demo_Body_Red'),
+        'glass': materials.get_material_info('Demo_Glass'),
+        'rubber': materials.get_material_info('Demo_Rubber'),
+    }
+
+__result__ = execute()
+"""
+
 if __name__ == "__main__":
     print("示例脚本列表：")
     print("  EXAMPLE_GOTHIC_TOWER  - 生成哥特塔楼")
     print("  EXAMPLE_FIND_BARE_MESH - 找无材质对象并截图")
     print("  EXAMPLE_FILTER_LOGS    - 过滤日志")
+    print("  EXAMPLE_ASSIGN_MATERIALS - 创建并分配材质")

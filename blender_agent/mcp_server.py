@@ -17,6 +17,7 @@ import queue
 import threading
 import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from typing import Any, Optional
 from urllib.parse import urlparse, parse_qs
 import uuid
@@ -129,9 +130,9 @@ class MCPHandler(BaseHTTPRequestHandler):
 
         # 持续推送消息
         try:
-            while True:
+            while not self.server._stopping:
                 try:
-                    data = session.messages.get(timeout=30)
+                    data = session.messages.get(timeout=5)
                     self.wfile.write(data.encode())
                     self.wfile.flush()
                 except queue.Empty:
@@ -286,12 +287,19 @@ class MCPHandler(BaseHTTPRequestHandler):
 
 # ── MCP Server ────────────────────────────────────────────────────────────────
 
-class MCPServer(HTTPServer):
-    """带有 session 管理和 BuiltinLoader 引用的 HTTP Server。"""
+class MCPServer(ThreadingMixIn, HTTPServer):
+    """带有 session 管理和 BuiltinLoader 引用的 HTTP Server。
+
+    使用 ThreadingMixIn 让每个请求在独立线程中处理，
+    避免 SSE 长连接阻塞 serve_forever 循环。
+    """
+    daemon_threads = True
+    allow_reuse_address = True
 
     def __init__(self, host: str, port: int, loader: BuiltinLoader):
         self.sessions: dict[str, SSESession] = {}
         self.loader = loader
+        self._stopping = False
         super().__init__((host, port), MCPHandler)
 
 
@@ -328,7 +336,9 @@ def stop():
     eval_core.stop_timer()
 
     if _server is not None:
+        _server._stopping = True
         _server.shutdown()
+        _server.server_close()
         _server = None
     _thread = None
     _loader = None

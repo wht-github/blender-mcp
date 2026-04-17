@@ -14,6 +14,7 @@ blender_agent/
 └── builtins/
     ├── screenshot.py    # 截取 Viewport / Render 画面
     ├── scene_info.py    # 场景层级 / 对象信息查询
+    ├── materials.py     # 创建 / 复用材质并分配到对象
     └── blender_log.py   # 获取 Blender 系统日志
 ```
 
@@ -41,6 +42,30 @@ def execute():
     bpy.context.view_layer.objects.active = bpy.data.objects[bare[0]]
     img = screenshot.capture_viewport()
     return {"missing_material": bare, "screenshot": img}
+
+__result__ = execute()
+```
+
+### 新增 builtin：`materials`
+
+适合把高频、脆弱的材质样板代码收敛到一个薄层 builtin：
+
+```python
+# LLM 可直接调用的典型脚本
+def execute():
+    materials = get_builtin('materials')
+
+    materials.create_preset(
+        'Truck_Body_Red',
+        'painted_metal',
+        overrides={'base_color': (0.9, 0.15, 0.05, 1.0), 'metallic': 0.3, 'roughness': 0.3},
+    )
+    materials.apply_material_to_objects('Truck_Body_Red', ['Car body', 'door-left', 'door-right'])
+
+    materials.create_preset('Truck_Glass', 'glass')
+    materials.assign_faces_by_index('Car body', [12, 13, 14], material_name='Truck_Glass')
+
+    return materials.get_material_info('Truck_Body_Red')
 
 __result__ = execute()
 ```
