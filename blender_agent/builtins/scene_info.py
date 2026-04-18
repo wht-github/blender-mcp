@@ -28,8 +28,8 @@ scene_info builtin — 场景信息与操作
     type: 'MESH'|'LIGHT'|'CAMERA'|'CURVE'|'ARMATURE' 等（None=不限）
 
 操作函数：
-  focus_object(name: str) -> bool
-    选中并在 3D 视口中聚焦指定对象（等效于 Numpad '.'）。
+    focus_object(name: str) -> bool
+        选中并在 3D 视口中聚焦指定对象（等效于 Numpad '.'）。
 
   select_objects(names: list[str], deselect_all=True)
     选中指定对象列表。

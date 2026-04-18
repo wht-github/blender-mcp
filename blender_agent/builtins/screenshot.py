@@ -10,61 +10,46 @@ import tempfile
 
 import bpy
 
-SUMMARY = "截取 3D Viewport/指定编辑器或渲染结果，支持直觉别名与可选缩放，返回 base64 PNG 供 LLM 视觉分析"
+SUMMARY = "纯截图：使用显式接口截取指定编辑器区域或渲染结果；对象聚焦截图请优先用 viewport builtin"
 
 DESCRIPTION = """
 screenshot builtin — Viewport 画面截取
 
 函数：
-  capture(area='VIEW_3D', width=None, height=None) -> str
-    统一截图入口。默认截取 3D 视口。
-    area 常用值或别名：
-      'VIEW_3D' | '3D' | '3D_VIEW' | 'VIEWPORT'
-      'IMAGE_EDITOR' | 'UV' | 'NODE_EDITOR'
+    capture_viewport(area_type='VIEW_3D', width=None, height=None) -> str
+        截取指定类型的编辑器区域，返回 base64 PNG 字符串。
+        area_type 仅接受 Blender 的精确区域类型名称：
+            'VIEW_3D' | 'IMAGE_EDITOR' | 'NODE_EDITOR'
+        若找不到对应区域，回退到截取整个窗口。
 
-  capture_viewport(area_type='VIEW_3D', width=None, height=None) -> str
-    截取指定类型的编辑器区域，返回 base64 PNG 字符串。
-    若找不到对应区域，回退到截取整个窗口。
+    capture_render(frame=None, width=None, height=None) -> str
+        渲染当前帧（或指定帧），返回 base64 PNG 字符串。
+        注意：这会触发真实渲染，可能耗时较长。
 
-  capture_view(width=None, height=None) -> str
-  capture_3d_view(width=None, height=None) -> str
-    3D 视图截图的直觉别名，兼容常见写法。
+    as_result(image_b64, message='当前截图', **extra_fields) -> dict
+        将 base64 图片包装成 MCP 可识别的返回结构。
 
-  capture_render(frame=None, width=None, height=None) -> str
-    渲染当前帧（或指定帧），返回 base64 PNG 字符串。
-    注意：这会触发真实渲染，可能耗时较长。
-
-  as_result(image_b64, message='当前截图', **extra_fields) -> dict
-    将 base64 图片包装成 MCP 可识别的返回结构。
+说明：
+    - screenshot 只负责截图，不负责对象聚焦或对象可见性控制。
+    - 若需要“聚焦零件后截图”，优先使用 viewport builtin。
+    - 不提供别名；请严格使用文档中的函数名、参数名和 area_type 枚举值。
 
 示例：
-  screenshot = get_builtin('screenshot')
+    screenshot = get_builtin('screenshot')
 
-  img_b64 = screenshot.capture_3d_view(width=1024, height=768)
-  __result__ = screenshot.as_result(img_b64, message='当前 3D 视图截图')
+    img_b64 = screenshot.capture_viewport(area_type='VIEW_3D', width=1024, height=768)
+    __result__ = screenshot.as_result(img_b64, message='当前 3D 视图截图')
 
-  # 或者使用统一入口
-  __result__ = screenshot.as_result(screenshot.capture(area='UV'))
+    uv_b64 = screenshot.capture_viewport(area_type='IMAGE_EDITOR', width=1024, height=768)
+    __result__ = screenshot.as_result(uv_b64, message='当前图像编辑器截图')
 """
 
 
-_AREA_ALIASES = {
-    "3D": "VIEW_3D",
-    "3DVIEW": "VIEW_3D",
-    "3D_VIEW": "VIEW_3D",
-    "VIEWPORT": "VIEW_3D",
-    "VIEW_3D": "VIEW_3D",
-    "IMAGE": "IMAGE_EDITOR",
-    "IMAGE_EDITOR": "IMAGE_EDITOR",
-    "NODE": "NODE_EDITOR",
-    "NODE_EDITOR": "NODE_EDITOR",
-    "UV": "UV",
-    "UV_EDITOR": "UV",
+_ALLOWED_AREA_TYPES = {
+    "VIEW_3D",
+    "IMAGE_EDITOR",
+    "NODE_EDITOR",
 }
-
-
-def _normalize_area_type(area_type: str) -> str:
-    return _AREA_ALIASES.get(area_type.strip().upper(), area_type.strip().upper())
 
 
 def _encode_file_as_base64(path: str) -> str:
@@ -72,7 +57,11 @@ def _encode_file_as_base64(path: str) -> str:
         return base64.b64encode(handle.read()).decode("utf-8")
 
 
-def _resize_image_file(path: str, width: int | None, height: int | None) -> None:
+def _resize_image_file(
+    path: str,
+    width: int | None,
+    height: int | None,
+) -> None:
     if width is None and height is None:
         return
 
@@ -96,7 +85,11 @@ def _resize_image_file(path: str, width: int | None, height: int | None) -> None
 
 
 def _capture_area_to_file(area_type: str, path: str) -> None:
-    normalized_area_type = _normalize_area_type(area_type)
+    normalized_area_type = area_type.strip().upper()
+    if normalized_area_type not in _ALLOWED_AREA_TYPES:
+        raise ValueError(
+            f"Unsupported area_type '{area_type}'. Supported values: {sorted(_ALLOWED_AREA_TYPES)}"
+        )
 
     assert bpy.context.window_manager is not None
     target_window = None
@@ -118,11 +111,6 @@ def _capture_area_to_file(area_type: str, path: str) -> None:
         bpy.ops.screen.screenshot_area(filepath=path)
 
 
-def capture(area: str = "VIEW_3D", width: int | None = None, height: int | None = None) -> str:
-    """统一截图入口，默认截取 3D 视口。"""
-    return capture_viewport(area_type=area, width=width, height=height)
-
-
 def capture_viewport(
     area_type: str = "VIEW_3D",
     width: int | None = None,
@@ -139,16 +127,6 @@ def capture_viewport(
     finally:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
-
-
-def capture_view(width: int | None = None, height: int | None = None) -> str:
-    """3D 视图截图的短别名。"""
-    return capture_viewport(area_type="VIEW_3D", width=width, height=height)
-
-
-def capture_3d_view(width: int | None = None, height: int | None = None) -> str:
-    """兼容常见调用写法的 3D 视图截图别名。"""
-    return capture_viewport(area_type="VIEW_3D", width=width, height=height)
 
 
 def capture_render(

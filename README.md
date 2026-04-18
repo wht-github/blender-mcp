@@ -13,6 +13,7 @@ blender_agent/
 ├── builtin_loader.py    # Builtins 发现 & 懒加载管理器
 └── builtins/
     ├── screenshot.py    # 截取 Viewport / Render 画面
+    ├── viewport.py      # 聚焦选中零件并截图
     ├── scene_info.py    # 场景层级 / 对象信息查询
     ├── materials.py     # 创建 / 复用材质并分配到对象
     └── blender_log.py   # 获取 Blender 系统日志
@@ -29,19 +30,17 @@ LLM 只有一个工具：提交一段 Python 代码。Agent 在 Blender 主线�
 # LLM 生成的典型脚本
 def execute():
     scene_info = get_builtin('scene_info')
-    screenshot = get_builtin('screenshot')
+    viewport = get_builtin('viewport')
 
     # 找出所有没有材质的 Mesh 对象
-    bare = [obj.name for obj in bpy.data.objects
-            if obj.type == 'MESH' and not obj.data.materials]
+    bare = scene_info.find_objects(type='MESH', no_material=True)
 
     if not bare:
         return "所有 Mesh 对象均已有材质"
 
-    # 聚焦第一个并截图
-    bpy.context.view_layer.objects.active = bpy.data.objects[bare[0]]
-    img = screenshot.capture_viewport()
-    return {"missing_material": bare, "screenshot": img}
+    # 在同一个 3D 视口里聚焦并截图，避免焦点和截图落在不同窗口
+    img = viewport.capture_objects([bare[0]], width=1024)
+    return viewport.as_result(img, message='缺少材质对象截图', missing_material=bare)
 
 __result__ = execute()
 ```
@@ -70,6 +69,27 @@ def execute():
 __result__ = execute()
 ```
 
+### 新增 builtin：`viewport`
+
+适合把“选中对象 → 视口构图 → 截图”收敛到一个薄层 builtin：
+
+```python
+def execute():
+    viewport = get_builtin('viewport')
+
+    img = viewport.capture_selection(
+        width=1280,
+        height=720,
+    )
+    return viewport.as_result(
+        img,
+        message='当前选中零件截图',
+        selected=viewport.get_selected_objects(),
+    )
+
+__result__ = execute()
+```
+
 ### Builtins 两级文档
 
 每个 builtin 模块顶部定义：
@@ -77,8 +97,8 @@ __result__ = execute()
 ```python
 SUMMARY = "截取 Viewport / Render 画面，返回 base64 图像"   # 始终在上下文
 DESCRIPTION = """                                              # 按需加载
-capture_viewport(view='3d') -> str   # base64 PNG
-  view: '3d' | 'render' | 'uv' | 'node'
+capture_viewport(area_type='VIEW_3D', width=None, height=None) -> str
+capture_render(frame=None, width=None, height=None) -> str
 ...
 """
 ```

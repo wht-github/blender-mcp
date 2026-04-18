@@ -41,6 +41,8 @@ def _build_tool_description(loader: BuiltinLoader) -> dict:
             "约定：\n"
             "  - 通过 get_builtin('name') 获取 builtin 模块\n"
             "  - 通过 get_builtin_doc('name') 查看某个 builtin 的完整 API 文档\n"
+            "  - 若要聚焦当前选中零件并截图，优先使用 viewport builtin，不要手写 view_selected/screenshot 流程\n"
+            "  - builtin 只保证文档中的规范函数名与参数名；不要猜别名，先执行 __result__ = get_builtin_doc('viewport') 或 get_builtin_doc('screenshot')\n"
             "  - 脚本结尾必须赋值 __result__ = ...\n"
             "  - 建议封装在 def execute(): ... / __result__ = execute() 中"
         ),

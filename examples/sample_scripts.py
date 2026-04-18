@@ -67,26 +67,45 @@ __result__ = execute()
 EXAMPLE_FIND_BARE_MESH = """
 def execute():
     scene_info = get_builtin('scene_info')
-    screenshot = get_builtin('screenshot')
+    viewport = get_builtin('viewport')
 
     # 脚本端过滤，不污染上下文
     bare = scene_info.find_objects(type='MESH', no_material=True)
     if not bare:
         return "所有 Mesh 对象均已有材质"
 
-    scene_info.focus_object(bare[0])
-    img = screenshot.capture_viewport()
-    return {
-        "missing_material_count": len(bare),
-        "objects": bare,
-        "screenshot": img,   # 框架识别为图像
-    }
+    img = viewport.capture_objects([bare[0]], width=1024)
+    return viewport.as_result(
+        img,
+        message='缺少材质对象截图',
+        missing_material_count=len(bare),
+        objects=bare,
+    )
 
 __result__ = execute()
 """
 
 
-# ── 示例 3：分析与 bpy 相关的错误日志 ─────────────────────────────────────────
+# ── 示例 3：聚焦当前选中零件并截图 ─────────────────────────────────────────────
+EXAMPLE_CAPTURE_SELECTED_PARTS = """
+def execute():
+    viewport = get_builtin('viewport')
+
+    img = viewport.capture_selection(
+        width=1280,
+        height=720,
+    )
+    return viewport.as_result(
+        img,
+        message='当前选中零件截图',
+        selected=viewport.get_selected_objects(),
+    )
+
+__result__ = execute()
+"""
+
+
+# ── 示例 4：分析与 bpy 相关的错误日志 ─────────────────────────────────────────
 EXAMPLE_FILTER_LOGS = """
 def execute():
     log = get_builtin('blender_log')
@@ -107,7 +126,7 @@ __result__ = execute()
 
 
 
-# ── 示例 4：用 materials builtin 创建并分配材质 ─────────────────────────────────
+# ── 示例 5：用 materials builtin 创建并分配材质 ─────────────────────────────────
 EXAMPLE_ASSIGN_MATERIALS = """
 def execute():
     materials = get_builtin('materials')
@@ -143,5 +162,6 @@ if __name__ == "__main__":
     print("示例脚本列表：")
     print("  EXAMPLE_GOTHIC_TOWER  - 生成哥特塔楼")
     print("  EXAMPLE_FIND_BARE_MESH - 找无材质对象并截图")
+    print("  EXAMPLE_CAPTURE_SELECTED_PARTS - 截图当前选中零件")
     print("  EXAMPLE_FILTER_LOGS    - 过滤日志")
     print("  EXAMPLE_ASSIGN_MATERIALS - 创建并分配材质")
