@@ -1,12 +1,11 @@
 [project]
 name = "blender-agent"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.3.0"
+description = "A local Streamable HTTP MCP bridge for Blender"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "bpy>=5.1.0",
-    "openai>=1.0.0",
+    "mcp>=1.28.1,<2",
 ]
 
 [dependency-groups]

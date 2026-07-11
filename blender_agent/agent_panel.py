@@ -103,10 +103,10 @@ class AGENT_PT_Main(Panel):
         box = layout.box()
         box.label(text="MCP 客户端配置:", icon="INFO")
         if running:
-            box.label(text=f"SSE URL: {mcp_server.get_url()}")
+            box.label(text=f"HTTP URL: {mcp_server.get_url()}")
         else:
             prefs = context.preferences.addons[__package__].preferences
-            box.label(text=f"SSE URL: http://{prefs.mcp_host}:{prefs.mcp_port}/sse")
+            box.label(text=f"HTTP URL: http://{prefs.mcp_host}:{prefs.mcp_port}/mcp")
         box.label(text="Tool: eval_python_code")
 
 

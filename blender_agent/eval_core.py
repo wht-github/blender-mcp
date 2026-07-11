@@ -13,6 +13,7 @@ eval_core.py — Python 代码执行引擎
 """
 
 import bpy
+import queue
 import traceback
 import threading
 from typing import Any
@@ -91,24 +92,28 @@ class _ExecutionTask:
         self._event.set()
 
     def wait(self, timeout: float = 30.0) -> Any:
-        self._event.wait(timeout)
+        if not self._event.wait(timeout):
+            return {
+                "error": f"Blender execution timed out after {timeout:.1f} seconds",
+                "timed_out": True,
+            }
         return self.result
 
 
-_pending_task: _ExecutionTask | None = None
-_task_lock = threading.Lock()
+_pending_tasks: queue.Queue[_ExecutionTask] = queue.Queue()
 
 
 def _timer_callback():
     """注册到 bpy.app.timers，在主线程中轮询并执行待处理任务。"""
-    global _pending_task
-    with _task_lock:
-        task = _pending_task
-        _pending_task = None
+    try:
+        task = _pending_tasks.get_nowait()
+    except queue.Empty:
+        task = None
 
     if task is not None:
         result = run_code(task.code)
         task.mark_done(result)
+        _pending_tasks.task_done()
 
     return 0.05  # 每 50ms 轮询一次
 
@@ -118,10 +123,8 @@ def run_code_from_thread(code: str, timeout: float = 60.0) -> Any:
     从后台线程安全地在 Blender 主线程执行代码。
     阻塞直到执行完成或超时。
     """
-    global _pending_task
     task = _ExecutionTask(code)
-    with _task_lock:
-        _pending_task = task
+    _pending_tasks.put(task)
     return task.wait(timeout)
 
 
@@ -133,3 +136,11 @@ def start_timer():
 def stop_timer():
     if bpy.app.timers.is_registered(_timer_callback):
         bpy.app.timers.unregister(_timer_callback)
+
+    while True:
+        try:
+            task = _pending_tasks.get_nowait()
+        except queue.Empty:
+            break
+        task.mark_done({"error": "Blender execution service stopped"})
+        _pending_tasks.task_done()

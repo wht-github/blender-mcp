@@ -9,7 +9,7 @@ builtin_loader.py — Builtins 发现与懒加载管理器
   builtins/*.py  每个文件是一个独立 builtin 模块
 """
 
-import importlib
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -140,11 +140,15 @@ class BuiltinLoader:
 
     @staticmethod
     def _read_attr(path: Path, attr: str) -> Optional[str]:
-        """快速读取模块顶层变量，不执行整个模块。"""
+        """读取模块顶层字符串常量，不导入或执行模块。"""
         try:
-            spec = BuiltinLoader._require_spec(path, "_tmp")
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return getattr(mod, attr, None)
-        except Exception:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in tree.body:
+                if not isinstance(node, ast.Assign):
+                    continue
+                if any(isinstance(target, ast.Name) and target.id == attr for target in node.targets):
+                    value = ast.literal_eval(node.value)
+                    return value if isinstance(value, str) else None
+        except (OSError, SyntaxError, ValueError):
             return None
+        return None

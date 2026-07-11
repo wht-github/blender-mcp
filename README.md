@@ -1,123 +1,94 @@
-# Blender Agent — eval + builtins 架构
+# Blender Agent — Streamable HTTP MCP bridge
 
-LLM 生成 Python 脚本 → Blender 内置解释器执行 → bpy API 直接操控场景。
+外部 AI 客户端通过 MCP 发送 Python 脚本，插件把脚本调度到 Blender 主线程执行，
+再将 `__result__`（以及可选截图）作为 MCP tool result 返回。
 
-## 架构概览
+项目的阶段目标、优先级和发布标准见 [`ROADMAP.md`](ROADMAP.md)。
 
+## 架构
+
+```text
+MCP client
+    │  Streamable HTTP /mcp
+    ▼
+official MCP Python SDK + Uvicorn (background thread)
+    │  FIFO execution queue
+    ▼
+bpy.app.timers (Blender main thread)
+    │
+    ├── bpy API
+    └── builtins: scene_info / materials / viewport / screenshot / blender_log
 ```
-blender_agent/
-├── __init__.py          # Blender Addon 注册入口
-├── agent_panel.py       # Blender UI 面板
-├── eval_core.py         # Python 代码执行引擎（核心）
-├── agent_loop.py        # LLM Agent 对话循环
-├── builtin_loader.py    # Builtins 发现 & 懒加载管理器
-└── builtins/
-    ├── screenshot.py    # 截取 Viewport / Render 画面
-    ├── viewport.py      # 聚焦选中零件并截图
-    ├── scene_info.py    # 场景层级 / 对象信息查询
-    ├── materials.py     # 创建 / 复用材质并分配到对象
-    └── blender_log.py   # 获取 Blender 系统日志
-```
 
-## 核心设计
-
-### 唯一 Tool：`eval_python_code`
-
-LLM 只有一个工具：提交一段 Python 代码。Agent 在 Blender 主线程中执行它，
-返回 `__result__` 变量的值。
+服务只暴露一个 tool：`eval_python_code(code: str)`。脚本必须把返回值赋给
+`__result__`；返回 dict 中的 `screenshot` 字段会转换为 MCP image content。
 
 ```python
-# LLM 生成的典型脚本
 def execute():
-    scene_info = get_builtin('scene_info')
-    viewport = get_builtin('viewport')
-
-    # 找出所有没有材质的 Mesh 对象
-    bare = scene_info.find_objects(type='MESH', no_material=True)
-
+    scene_info = get_builtin("scene_info")
+    viewport = get_builtin("viewport")
+    bare = scene_info.find_objects(type="MESH", no_material=True)
     if not bare:
         return "所有 Mesh 对象均已有材质"
 
-    # 在同一个 3D 视口里聚焦并截图，避免焦点和截图落在不同窗口
-    img = viewport.capture_objects([bare[0]], width=1024)
-    return viewport.as_result(img, message='缺少材质对象截图', missing_material=bare)
+    image = viewport.capture_objects([bare[0]], width=1024)
+    return viewport.as_result(image, message="缺少材质对象截图", objects=bare)
 
 __result__ = execute()
 ```
 
-### 新增 builtin：`materials`
+## 构建 Blender 安装包
 
-适合把高频、脆弱的材质样板代码收敛到一个薄层 builtin：
+运行时使用官方 `mcp` SDK。它和 Uvicorn、Pydantic 等依赖会在构建时安装到
+`blender_agent/libs/`，随后一起写入安装 zip。用户不需要在 Blender 中运行 pip。
 
-```python
-# LLM 可直接调用的典型脚本
-def execute():
-    materials = get_builtin('materials')
+默认目标是 Blender 5.x 使用的 Python 3.13，以及当前构建机的平台：
 
-    materials.create_preset(
-        'Truck_Body_Red',
-        'painted_metal',
-        overrides={'base_color': (0.9, 0.15, 0.05, 1.0), 'metallic': 0.3, 'roughness': 0.3},
-    )
-    materials.apply_material_to_objects('Truck_Body_Red', ['Car body', 'door-left', 'door-right'])
-
-    materials.create_preset('Truck_Glass', 'glass')
-    materials.assign_faces_by_index('Car body', [12, 13, 14], material_name='Truck_Glass')
-
-    return materials.get_material_info('Truck_Body_Red')
-
-__result__ = execute()
+```powershell
+uv lock
+uv export --frozen --no-dev --no-emit-project --no-hashes `
+  --format requirements-txt --output-file runtime-requirements.txt
+uv run --no-project --python 3.13 python package.py
 ```
 
-### 新增 builtin：`viewport`
+生成文件为 `blender_agent.zip`。依赖包含原生扩展，所以不同 Python 版本和平台
+应分别构建 zip：
 
-适合把“选中对象 → 视口构图 → 截图”收敛到一个薄层 builtin：
+```powershell
+# Windows x64 / Blender 5.x
+uv run --no-project --python 3.13 python package.py `
+  --python-version 3.13 `
+  --python-platform x86_64-pc-windows-msvc `
+  --output blender_agent-blender5-windows-x64.zip
 
-```python
-def execute():
-    viewport = get_builtin('viewport')
-
-    img = viewport.capture_selection(
-        width=1280,
-        height=720,
-    )
-    return viewport.as_result(
-        img,
-        message='当前选中零件截图',
-        selected=viewport.get_selected_objects(),
-    )
-
-__result__ = execute()
+# 依赖已经生成，仅重新打包
+uv run --no-project --python 3.13 python package.py --skip-dependencies
 ```
 
-### Builtins 两级文档
+`runtime-requirements.txt` 由 `uv.lock` 生成并固定传递依赖版本。修改
+`pyproject.toml` 后应重新执行上面的 `uv lock` 和 `uv export`。
 
-每个 builtin 模块顶部定义：
+## 安装与连接
 
-```python
-SUMMARY = "截取 Viewport / Render 画面，返回 base64 图像"   # 始终在上下文
-DESCRIPTION = """                                              # 按需加载
-capture_viewport(area_type='VIEW_3D', width=None, height=None) -> str
-capture_render(frame=None, width=None, height=None) -> str
-...
-"""
+1. Blender → Edit → Preferences → Add-ons → Install，选择生成的 zip。
+2. 启用 “Blender AI Agent (MCP)”。
+3. 在 3D Viewport → Sidebar → AI Agent 中启动 Server。
+4. 将 MCP 客户端连接到 `http://127.0.0.1:8400/mcp`，transport 选择 HTTP。
+
+插件启用了 SDK 的 DNS rebinding 防护，并默认只监听 `127.0.0.1`。这个 tool
+可以执行任意 Python，只应连接受信任的本机 MCP 客户端。
+
+## 开发验证
+
+```powershell
+uv run python -m unittest discover -s tests -v
+uv run --no-project --python 3.13 python package.py
 ```
 
-框架启动时收集所有 `SUMMARY`，注入到 `eval_python_code` 的 tool description 中。
-LLM 按需调用 `get_builtin('xxx')` 触发完整 `DESCRIPTION` 的加载（追加到下一轮上下文）。
+主要源码：
 
-## 安装
-
-1. 将 `blender_agent/` 目录打包为 `.zip`
-2. Blender → Edit → Preferences → Add-ons → Install
-3. 在 Addon 设置中填入 API Key（支持 OpenAI / Anthropic / 本地模型）
-4. 3D Viewport 侧边栏 → "AI Agent" 面板开始对话
-
-## 对比传统 tools 模式
-
-| 场景 | tools 模式 | eval + builtins |
-|------|-----------|-----------------|
-| 遍历场景找问题对象 | 场景树 JSON 全进上下文 | 脚本内遍历，只返回结果 |
-| 过滤日志 | 所有日志返回 LLM | 脚本端过滤，只返回相关条目 |
-| 多步骤操作 | N 次往返 | 1 次往返 |
-| 上下文占用 | 随 tools 数量线性增长 | 仅 summaries（每条 1 行）|
+- `blender_agent/mcp_server.py`：Streamable HTTP 生命周期和 MCP tool
+- `blender_agent/eval_core.py`：Blender 主线程执行队列
+- `blender_agent/builtin_loader.py`：builtin 发现和按需加载
+- `bundle_dependencies.py`：为目标 Blender Python/平台准备运行时依赖
+- `package.py`：生成包含运行时依赖的安装 zip
