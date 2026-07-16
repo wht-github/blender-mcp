@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 from pathlib import Path
+import queue
 import socket
 import sys
 import threading
@@ -96,10 +97,155 @@ class ExecutionQueueTests(unittest.TestCase):
         first.join()
         second.join()
 
-        self.assertEqual(results, {"first": "first", "second": "second"})
+        self.assertEqual(
+            {name: outcome.result for name, outcome in results.items()},
+            {"first": "first", "second": "second"},
+        )
+        self.assertTrue(all(outcome.status == "succeeded" for outcome in results.values()))
+
+    def test_none_is_valid_but_missing_result_is_structured_error(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        self.assertIsNone(eval_core.run_code("__result__ = None"))
+        missing = eval_core.run_code("value = 1")
+        self.assertEqual(missing["error"]["code"], "MISSING_RESULT")
+
+    def test_queue_timeout_is_not_executed_later(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        outcome = eval_core.run_code_from_thread("__result__ = 1", timeout=0.01)
+        self.assertEqual(outcome.status, "timed_out")
+        self.assertEqual(outcome.result["error"]["code"], "QUEUE_TIMEOUT")
+
+        eval_core._timer_callback()
+        history = eval_core.get_task_history()
+        self.assertEqual(history[0]["status"], "timed_out")
+        self.assertIsNone(history[0]["started_at"])
+
+    def test_running_timeout_records_that_execution_continues(self):
+        _loader, eval_core, _server = load_runtime_modules()
+        result = {}
+
+        worker = threading.Thread(
+            target=lambda: result.update(
+                outcome=eval_core.run_code_from_thread(
+                    "import time; time.sleep(0.1); __result__ = 1",
+                    timeout=0.02,
+                )
+            )
+        )
+        worker.start()
+        deadline = time.monotonic() + 1.0
+        while eval_core._pending_tasks.qsize() < 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+        executor = threading.Thread(target=eval_core._timer_callback)
+        executor.start()
+        worker.join()
+        active_history = eval_core.get_task_history()
+
+        self.assertEqual(result["outcome"].status, "timed_out")
+        self.assertEqual(result["outcome"].result["error"]["code"], "EXECUTION_TIMEOUT")
+        self.assertTrue(active_history[0]["execution_continues"])
+
+        executor.join()
+        self.assertFalse(eval_core.get_task_history()[0]["execution_continues"])
+
+    def test_queue_capacity_rejection_is_structured(self):
+        _loader, eval_core, _server = load_runtime_modules()
+        eval_core._pending_tasks = queue.Queue(maxsize=1)
+        eval_core._pending_tasks.put_nowait(eval_core._ExecutionTask("__result__ = 1"))
+
+        outcome = eval_core.run_code_from_thread("__result__ = 2", timeout=0.1)
+
+        self.assertEqual(outcome.status, "failed")
+        self.assertEqual(outcome.result["error"]["code"], "QUEUE_FULL")
+        eval_core.stop_timer()
+
+    def test_code_size_limit_is_structured_and_recorded(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        outcome = eval_core.run_code_from_thread(
+            "x" * (eval_core.MAX_CODE_BYTES + 1),
+            timeout=0.1,
+        )
+
+        self.assertEqual(outcome.status, "failed")
+        self.assertEqual(outcome.result["error"]["code"], "CODE_TOO_LARGE")
+        self.assertEqual(eval_core.get_task_history()[0]["request_id"], outcome.request_id)
+
+    def test_stop_cancels_queued_task(self):
+        _loader, eval_core, _server = load_runtime_modules()
+        result = {}
+        worker = threading.Thread(
+            target=lambda: result.update(
+                outcome=eval_core.run_code_from_thread("__result__ = 1", timeout=1.0)
+            )
+        )
+        worker.start()
+        deadline = time.monotonic() + 1.0
+        while eval_core._pending_tasks.qsize() < 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+        eval_core.stop_timer()
+        worker.join()
+
+        self.assertEqual(result["outcome"].status, "cancelled")
+        self.assertEqual(result["outcome"].result["error"]["code"], "CANCELLED")
+
+    def test_one_hundred_concurrent_requests_have_unique_matched_outcomes(self):
+        _loader, eval_core, _server = load_runtime_modules()
+        results = {}
+        results_lock = threading.Lock()
+        stop_draining = threading.Event()
+
+        def execute(index: int):
+            outcome = eval_core.run_code_from_thread(
+                f"__result__ = {index}",
+                timeout=2.0,
+            )
+            with results_lock:
+                results[index] = outcome
+
+        def drain():
+            while not stop_draining.is_set() or not eval_core._pending_tasks.empty():
+                eval_core._timer_callback()
+                time.sleep(0.001)
+
+        drainer = threading.Thread(target=drain)
+        workers = [threading.Thread(target=execute, args=(index,)) for index in range(100)]
+        drainer.start()
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        stop_draining.set()
+        drainer.join()
+
+        self.assertEqual(len(results), 100)
+        self.assertEqual(len({outcome.request_id for outcome in results.values()}), 100)
+        for index, outcome in results.items():
+            if outcome.status == "succeeded":
+                self.assertEqual(outcome.result, index)
+            else:
+                self.assertEqual(outcome.result["error"]["code"], "QUEUE_FULL")
 
 
 class StreamableHTTPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_port_conflict_fails_without_runtime_or_timer(self):
+        _loader, eval_core, server = load_runtime_modules()
+        occupied = socket.socket()
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        port = int(occupied.getsockname()[1])
+        try:
+            with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                await asyncio.to_thread(server.start, port=port)
+            self.assertIsNone(server._runtime)
+            self.assertFalse(eval_core.bpy.app.timers.is_registered(eval_core._timer_callback))
+        finally:
+            occupied.close()
+
     async def test_initialize_list_and_call_tool(self):
         _loader, eval_core, server = load_runtime_modules()
         eval_core.start_timer = lambda: None

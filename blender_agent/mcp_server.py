@@ -12,6 +12,7 @@ import asyncio
 import base64
 from dataclasses import dataclass
 import json
+import socket
 import threading
 import time
 from typing import Any, Optional
@@ -24,6 +25,8 @@ _MCP_PATH = "/mcp"
 _STARTUP_TIMEOUT = 10.0
 _SHUTDOWN_TIMEOUT = 5
 _EXECUTION_TIMEOUT = 120.0
+_MAX_TEXT_RESULT_BYTES = 1024 * 1024
+_MAX_IMAGE_RESULT_BYTES = 10 * 1024 * 1024
 
 
 def _build_tool_description(loader: BuiltinLoader) -> str:
@@ -53,38 +56,92 @@ def _format_mcp_result(raw: object, docs: list[str] | None = None):
 
     docs = docs or []
     content = []
+    outcome = raw if isinstance(raw, eval_core.TaskOutcome) else None
+    if outcome is not None:
+        raw = outcome.result
+
+    def text_content(text: str):
+        size = len(text.encode("utf-8"))
+        if size > _MAX_TEXT_RESULT_BYTES:
+            return None, f"Text result exceeds the {_MAX_TEXT_RESULT_BYTES}-byte limit"
+        return TextContent(type="text", text=text), None
+
+    def error_result(message: str):
+        items: list[Any] = [TextContent(type="text", text=message)]
+        if outcome is not None:
+            items.append(TextContent(type="text", text=_format_outcome_metadata(outcome)))
+        return CallToolResult(content=items, isError=True)
 
     if isinstance(raw, dict):
         payload = dict(raw)
         if "error" in payload:
-            text = f"[执行错误]\n{payload['error']}"
-            if payload.get("timed_out"):
+            error = payload["error"]
+            if isinstance(error, dict):
+                code = error.get("code", "EXECUTION_ERROR")
+                message = error.get("message", "Blender execution failed")
+                details = error.get("details")
+                text = f"[执行错误: {code}]\n{message}"
+                if details:
+                    text += f"\n{details}"
+                timed_out = code in {"QUEUE_TIMEOUT", "EXECUTION_TIMEOUT"}
+                execution_continues = bool(error.get("execution_continues"))
+            else:
+                text = f"[执行错误]\n{error}"
+                timed_out = bool(payload.get("timed_out"))
+                execution_continues = timed_out
+            if timed_out and execution_continues:
                 text += "\n注意：超时不能中断已经在 Blender 主线程中运行的 Python 代码。"
-            content.append(TextContent(type="text", text=text))
+            item, size_error = text_content(text)
+            if size_error:
+                item = TextContent(type="text", text=size_error)
+            content.append(item)
+            if outcome is not None:
+                content.append(TextContent(type="text", text=_format_outcome_metadata(outcome)))
             return CallToolResult(content=content, isError=True)
 
         screenshot = payload.pop("screenshot", None)
         if screenshot is not None:
             # Validate early so malformed tool output becomes a clear MCP error.
             try:
-                base64.b64decode(str(screenshot), validate=True)
+                image_data = base64.b64decode(str(screenshot), validate=True)
             except (ValueError, TypeError) as exc:
-                return CallToolResult(
-                    content=[TextContent(type="text", text=f"Invalid screenshot base64: {exc}")],
-                    isError=True,
+                return error_result(f"Invalid screenshot base64: {exc}")
+            if len(image_data) > _MAX_IMAGE_RESULT_BYTES:
+                return error_result(
+                    f"Image result exceeds the {_MAX_IMAGE_RESULT_BYTES}-byte limit"
                 )
             content.append(ImageContent(type="image", data=str(screenshot), mimeType="image/png"))
         if payload:
-            content.append(
-                TextContent(type="text", text=json.dumps(payload, ensure_ascii=False, default=str))
-            )
+            item, size_error = text_content(json.dumps(payload, ensure_ascii=False, default=str))
+            if size_error:
+                return error_result(size_error)
+            content.append(item)
+        elif screenshot is None:
+            content.append(TextContent(type="text", text="{}"))
     else:
         text = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False, default=str)
-        content.append(TextContent(type="text", text=text))
+        item, size_error = text_content(text)
+        if size_error:
+            return error_result(size_error)
+        content.append(item)
 
     if docs:
-        content.append(TextContent(type="text", text="\n\n".join(docs)))
+        docs_text = "\n\n".join(docs)
+        item, size_error = text_content(docs_text)
+        if size_error:
+            return error_result(size_error)
+        content.append(item)
+    if outcome is not None:
+        content.append(TextContent(type="text", text=_format_outcome_metadata(outcome)))
     return CallToolResult(content=content)
+
+
+def _format_outcome_metadata(outcome: eval_core.TaskOutcome) -> str:
+    execution = "-" if outcome.execution_ms is None else f"{outcome.execution_ms:.1f}"
+    return (
+        f"request_id={outcome.request_id} status={outcome.status} "
+        f"queue_ms={outcome.queue_ms:.1f} execution_ms={execution}"
+    )
 
 
 def _transport_security(host: str, port: int):
@@ -101,6 +158,26 @@ def _transport_security(host: str, port: int):
         allowed_hosts=allowed_hosts,
         allowed_origins=allowed_origins,
     )
+
+
+def _ensure_port_available(host: str, port: int) -> None:
+    """Fail before starting Uvicorn so Blender can show a useful port error."""
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise RuntimeError(f"Invalid MCP host '{host}': {exc}") from exc
+
+    last_error: OSError | None = None
+    for family, socktype, proto, _canonname, sockaddr in addresses:
+        probe = socket.socket(family, socktype, proto)
+        try:
+            probe.bind(sockaddr)
+            return
+        except OSError as exc:
+            last_error = exc
+        finally:
+            probe.close()
+    raise RuntimeError(f"MCP address {host}:{port} is unavailable: {last_error}")
 
 
 def _create_app(loader: BuiltinLoader, host: str, port: int):
@@ -171,6 +248,8 @@ def start(host: str = "127.0.0.1", port: int = 8400):
     if _runtime is not None:
         print(f"[blender-agent] MCP server already running on {get_url()}")
         return
+
+    _ensure_port_available(host, port)
 
     try:
         import uvicorn

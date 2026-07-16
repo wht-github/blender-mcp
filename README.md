@@ -4,6 +4,8 @@
 再将 `__result__`（以及可选截图）作为 MCP tool result 返回。
 
 项目的阶段目标、优先级和发布标准见 [`ROADMAP.md`](ROADMAP.md)。
+当前最高优先级的解释器能力设计见
+[`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONTEXT.md)。
 
 ## 架构
 
