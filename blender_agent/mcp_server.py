@@ -29,17 +29,21 @@ _MAX_TEXT_RESULT_BYTES = 1024 * 1024
 _MAX_IMAGE_RESULT_BYTES = 10 * 1024 * 1024
 
 
-def _build_tool_description(loader: BuiltinLoader) -> str:
-    summaries = loader.get_summaries()
+def _build_tool_description(_loader: BuiltinLoader) -> str:
     return (
         "在 Blender 内置 Python 解释器中执行一段 Python 代码。\n"
         "你可以使用 bpy.* 直接操作 Blender 场景与数据。\n"
         "脚本末尾必须将返回值赋给 __result__ 变量。\n"
         "若返回值包含键 'screenshot'，其值应为 base64 PNG 字符串。\n\n"
-        f"{summaries}\n\n"
+        "能力使用顺序：\n"
+        "  1. 用 runtime.list() 查看当前已加载能力\n"
+        "  2. 不确定能力时用 runtime.search(query) 搜索摘要\n"
+        "  3. 用 runtime.describe('builtin.name') 查看精确 API\n"
+        "  4. 用 runtime.load('builtin.name') 加载后，通过 tools.name 调用\n"
+        "  5. 任务结束可用 runtime.unload('builtin.name') 逻辑卸载\n\n"
+        "兼容接口：get_builtin('name') 会加载并激活 builtin；"
+        "get_builtin_doc('name') 返回完整文档。\n"
         "约定：\n"
-        "  - 通过 get_builtin('name') 获取 builtin 模块\n"
-        "  - 通过 get_builtin_doc('name') 查看某个 builtin 的完整 API 文档\n"
         "  - 聚焦对象并截图时优先使用 viewport builtin\n"
         "  - builtin 只保证文档中的规范函数名和参数名，不要猜别名\n"
         "  - 脚本结尾必须赋值 __result__ = ...\n"
@@ -215,7 +219,7 @@ def _create_app(loader: BuiltinLoader, host: str, port: int):
             code,
             _EXECUTION_TIMEOUT,
         )
-        docs = loader.get_newly_loaded_descriptions()
+        docs = list(raw_result.docs) if isinstance(raw_result, eval_core.TaskOutcome) else []
         return _format_mcp_result(raw_result, docs=docs)
 
     return mcp.streamable_http_app()

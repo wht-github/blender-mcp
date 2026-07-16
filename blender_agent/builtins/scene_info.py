@@ -10,6 +10,9 @@ import json
 from typing import Optional
 
 SUMMARY = "查询场景层级/对象属性、聚焦并选中对象、保存场景等操作"
+TAGS = ["scene", "object", "hierarchy", "selection", "save", "mesh", "material", "场景", "对象", "层级"]
+SIDE_EFFECTS = "mixed"
+RESULT_TYPES = ["object", "array", "text"]
 
 DESCRIPTION = """
 scene_info builtin — 场景信息与操作

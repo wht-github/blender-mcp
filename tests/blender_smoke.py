@@ -62,7 +62,23 @@ def main() -> None:
                         await session.initialize()
                         result = await session.call_tool(
                             "eval_python_code",
-                            {"code": "__result__ = {'blender': bpy.app.version_string}"},
+                            {
+                                "code": (
+                                    "matches = runtime.search('scene hierarchy')['matches']\n"
+                                    "runtime.load('builtin.scene_info')\n"
+                                    "__result__ = {\n"
+                                    "    'blender': bpy.app.version_string,\n"
+                                    "    'found': any(\n"
+                                    "        item['id'] == 'builtin.scene_info'\n"
+                                    "        for item in matches\n"
+                                    "    ),\n"
+                                    "    'module': tools.scene_info.__name__,\n"
+                                    "    'loaded': [\n"
+                                    "        item['id'] for item in runtime.list()['loaded']\n"
+                                    "    ],\n"
+                                    "}"
+                                )
+                            },
                         )
                         if result.isError:
                             raise RuntimeError(str(result.content))
@@ -95,6 +111,10 @@ def main() -> None:
             combined = "\n".join(result_text)
             if bpy.app.version_string not in combined:
                 raise AssertionError(f"Unexpected MCP result: {combined}")
+            if '"found": true' not in combined:
+                raise AssertionError(f"Capability search failed: {combined}")
+            if '"builtin.scene_info"' not in combined:
+                raise AssertionError(f"Capability load failed: {combined}")
             print(f"BLENDER_AGENT_SMOKE_OK {combined}")
         finally:
             blender_agent.unregister()

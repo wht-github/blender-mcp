@@ -23,9 +23,16 @@ from typing import Any
 import uuid
 
 from .builtin_loader import BuiltinLoader
+from .runtime_context import (
+    CapabilityRegistry,
+    LoadedBuiltinProxy,
+    RuntimeContext,
+    RuntimeFacade,
+)
 
 
 _loader: BuiltinLoader | None = None
+_runtime_context: RuntimeContext | None = None
 
 MAX_PENDING_TASKS = 32
 MAX_CODE_BYTES = 256 * 1024
@@ -33,18 +40,19 @@ TASK_HISTORY_LIMIT = 50
 
 
 def setup(loader: BuiltinLoader):
-    global _loader
+    global _loader, _runtime_context
     _loader = loader
+    _runtime_context = RuntimeContext(CapabilityRegistry(loader))
 
 
 def _make_exec_globals() -> dict:
     """构造脚本执行时的全局命名空间。"""
 
     def get_builtin(name: str):
-        """LLM 在脚本中调用此函数按需获取 builtin 模块。"""
-        if _loader is None:
-            raise RuntimeError("BuiltinLoader not initialized")
-        return _loader.load(name)
+        """兼容接口：加载 builtin，并将其激活到当前 Runtime Context。"""
+        if _runtime_context is None:
+            raise RuntimeError("RuntimeContext not initialized")
+        return _runtime_context.load_compat(name)
 
     def get_builtin_doc(name: str) -> str:
         """
@@ -53,16 +61,21 @@ def _make_exec_globals() -> dict:
           __result__ = get_builtin_doc('name')
         查阅文档后再写调用代码，避免盲猜 API。
         """
-        if _loader is None:
-            raise RuntimeError("BuiltinLoader not initialized")
-        doc = _loader.peek_description(name)
-        if doc is None:
-            available = list(_loader._registry.keys())
-            return f"Builtin '{name}' 不存在或无文档。可用列表：{available}"
-        return doc
+        if _runtime_context is None:
+            raise RuntimeError("RuntimeContext not initialized")
+        try:
+            described = _runtime_context.describe(name)
+        except ModuleNotFoundError as exc:
+            return str(exc)
+        return described["capabilities"][0].get("description") or "(无文档)"
+
+    if _runtime_context is None:
+        raise RuntimeError("RuntimeContext not initialized")
 
     return {
         "bpy": bpy,
+        "runtime": RuntimeFacade(_runtime_context),
+        "tools": LoadedBuiltinProxy(_runtime_context),
         "get_builtin": get_builtin,
         "get_builtin_doc": get_builtin_doc,
         "__builtins__": __builtins__,
@@ -134,6 +147,7 @@ class TaskOutcome:
     result: Any
     queue_ms: float
     execution_ms: float | None
+    docs: tuple[str, ...] = ()
 
 
 class _ExecutionTask:
@@ -150,6 +164,7 @@ class _ExecutionTask:
         self.queue_ms = 0.0
         self.execution_ms: float | None = None
         self.result_type: str | None = None
+        self.docs: tuple[str, ...] = ()
         self.timeout_phase: str | None = None
         self.execution_continues = False
         self._event = threading.Event()
@@ -165,9 +180,10 @@ class _ExecutionTask:
             self.queue_ms = (self._started_mono - self._submitted_mono) * 1000
             return True
 
-    def mark_done(self, result: Any) -> None:
+    def mark_done(self, result: Any, docs: list[str] | None = None) -> None:
         now_mono = time.monotonic()
         with self._lock:
+            self.docs = tuple(docs or ())
             self.result_type = _result_type(result)
             self.finished_at = time.time()
             if self._started_mono is not None:
@@ -210,6 +226,7 @@ class _ExecutionTask:
             result=self.result,
             queue_ms=self.queue_ms,
             execution_ms=self.execution_ms,
+            docs=self.docs,
         )
 
     def wait(self, timeout: float = 30.0) -> TaskOutcome:
@@ -291,7 +308,8 @@ def _timer_callback():
     if task is not None:
         if task.start():
             result = run_code(task.code)
-            task.mark_done(result)
+            docs = _loader.get_newly_loaded_descriptions() if _loader is not None else []
+            task.mark_done(result, docs)
         _pending_tasks.task_done()
 
     return 0.05  # 每 50ms 轮询一次

@@ -15,6 +15,9 @@ import bpy
 from . import screenshot as _screenshot
 
 SUMMARY = "检查截图：在同一 3D 视口中聚焦指定对象或当前选择并截图，减少手写 view_selected/screenshot 流程"
+TAGS = ["viewport", "focus", "selection", "screenshot", "image", "视口", "聚焦", "截图"]
+SIDE_EFFECTS = "mixed"
+RESULT_TYPES = ["image", "object", "array"]
 
 DESCRIPTION = """
 viewport builtin — 视口聚焦与检查截图

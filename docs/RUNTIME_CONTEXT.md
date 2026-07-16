@@ -1,6 +1,6 @@
 # Runtime Context 与渐进式能力披露
 
-状态：最高优先级设计  
+状态：R1 已实现，R2 待开始
 更新日期：2026-07-16
 
 ## 目标
@@ -49,9 +49,9 @@ MCP 和当前 Python SDK 支持动态增加、移除 tool 以及
 因此，动态 MCP tool 发布只作为未来的可选晋升机制；基础调用始终可通过
 `eval_python_code` 和 Runtime Context 完成。
 
-## Runtime Context 数据模型
+## Runtime Context 目标数据模型
 
-每个 runtime 使用显式 ID 标识，不能依赖 HTTP 连接代表会话：
+R2 起每个 runtime 使用显式 ID 标识，不能依赖 HTTP 连接代表会话：
 
 ```python
 @dataclass
@@ -86,7 +86,7 @@ class RuntimeContext:
 
 ## 解释器接口
 
-第一版固定提供以下接口：
+完整 Runtime Context 计划提供以下接口；R1 已实现前五个能力管理接口：
 
 ```python
 runtime.search(query, limit=5)
@@ -399,6 +399,8 @@ Runtime Context 仍运行任意 Python，因此不是沙箱。验证的目标是
 
 ### R1：统一能力目录与渐进披露
 
+状态：已完成（2026-07-16）
+
 - 新增 `CapabilityRegistry`。
 - 为 builtin 增加 `TAGS`、副作用和结果类型元数据。
 - 实现 `runtime.search()`、`describe()`、`load()`、`unload()` 和 `list()`。
@@ -411,6 +413,19 @@ Runtime Context 仍运行任意 Python，因此不是沙箱。验证的目标是
 - 增加任意数量 builtin 不会线性扩大常驻 MCP tool description。
 - Agent 能通过搜索和描述找到正确 builtin，无需猜测函数名。
 - 未加载 builtin 不向当前 runtime 披露完整文档。
+
+当前实现：
+
+- `BuiltinLoader` 通过 AST 读取 `SUMMARY`、`TAGS`、`SIDE_EFFECTS`、
+  `RESULT_TYPES` 和 `DESCRIPTION`，搜索和描述阶段都不会导入 builtin。
+- eval 命名空间注入 `runtime` 与 `tools`；只有经过 `runtime.load()` 激活的
+  builtin 才能通过 `tools.<name>` 访问。
+- `runtime.unload()` 只从当前逻辑可见空间移除能力，不删除 `sys.modules`。
+- `eval_python_code` 的固定 description 只说明发现协议，不再枚举 builtin。
+- `get_builtin()` 与 `get_builtin_doc()` 继续兼容，并接入同一 Runtime Context。
+- 首次加载产生的完整文档绑定到对应任务结果，避免并发请求拿错文档。
+- 显式 `describe()` 后首次加载不会重复附加同一份完整文档。
+- 18 项运行时与 Streamable HTTP 自动化测试通过，其中 8 项直接覆盖 R1。
 
 ### R2：显式 Runtime Context
 

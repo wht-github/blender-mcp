@@ -18,8 +18,11 @@ official MCP Python SDK + Uvicorn (background thread)
     ▼
 bpy.app.timers (Blender main thread)
     │
-    ├── bpy API
-    └── builtins: scene_info / materials / viewport / screenshot / blender_log
+    ▼
+Runtime Context
+    ├── runtime.search / describe / load / unload / list
+    ├── tools.<loaded_builtin>
+    └── bpy API
 ```
 
 服务只暴露一个 tool：`eval_python_code(code: str)`。脚本必须把返回值赋给
@@ -27,17 +30,26 @@ bpy.app.timers (Blender main thread)
 
 ```python
 def execute():
-    scene_info = get_builtin("scene_info")
-    viewport = get_builtin("viewport")
-    bare = scene_info.find_objects(type="MESH", no_material=True)
+    runtime.load("builtin.scene_info", "builtin.viewport")
+    bare = tools.scene_info.find_objects(type="MESH", no_material=True)
     if not bare:
         return "所有 Mesh 对象均已有材质"
 
-    image = viewport.capture_objects([bare[0]], width=1024)
-    return viewport.as_result(image, message="缺少材质对象截图", objects=bare)
+    image = tools.viewport.capture_objects([bare[0]], width=1024)
+    return tools.viewport.as_result(
+        image,
+        message="缺少材质对象截图",
+        objects=bare,
+    )
 
 __result__ = execute()
 ```
+
+不确定需要哪个 builtin 时，先执行
+`__result__ = runtime.search("聚焦没有材质的对象并截图")`，再用
+`runtime.describe("builtin.viewport")` 获取精确 API。完整文档只在描述或首次加载时
+披露，不会常驻在 MCP tool description 中。旧的 `get_builtin()` /
+`get_builtin_doc()` 接口仍然兼容。
 
 ## 构建 Blender 安装包
 
@@ -92,5 +104,6 @@ uv run --no-project --python 3.13 python package.py
 - `blender_agent/mcp_server.py`：Streamable HTTP 生命周期和 MCP tool
 - `blender_agent/eval_core.py`：Blender 主线程执行队列
 - `blender_agent/builtin_loader.py`：builtin 发现和按需加载
+- `blender_agent/runtime_context.py`：能力搜索、逻辑加载状态和 `tools` 代理
 - `bundle_dependencies.py`：为目标 Blender Python/平台准备运行时依赖
 - `package.py`：生成包含运行时依赖的安装 zip

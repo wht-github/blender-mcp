@@ -62,6 +62,7 @@ def load_runtime_modules():
     )
     eval_core = _load_module("blender_agent.eval_core", PACKAGE_DIR / "eval_core.py")
     mcp_server = _load_module("blender_agent.mcp_server", PACKAGE_DIR / "mcp_server.py")
+    eval_core.setup(loader.BuiltinLoader())
     return loader, eval_core, mcp_server
 
 
@@ -231,6 +232,137 @@ class ExecutionQueueTests(unittest.TestCase):
                 self.assertEqual(outcome.result["error"]["code"], "QUEUE_FULL")
 
 
+class RuntimeContextTests(unittest.TestCase):
+    def test_search_returns_compact_metadata_without_importing_builtin(self):
+        _loader, eval_core, _server = load_runtime_modules()
+        module_name = "blender_agent.builtins.viewport"
+
+        result = eval_core.run_code(
+            "__result__ = runtime.search('focus selection screenshot', limit=5)"
+        )
+
+        ids = [item["id"] for item in result["matches"]]
+        self.assertIn("builtin.viewport", ids)
+        self.assertTrue(all("description" not in item for item in result["matches"]))
+        self.assertNotIn(module_name, sys.modules)
+
+    def test_describe_discloses_full_doc_without_loading(self):
+        _loader, eval_core, _server = load_runtime_modules()
+        module_name = "blender_agent.builtins.materials"
+
+        result = eval_core.run_code(
+            "__result__ = runtime.describe('builtin.materials')"
+        )
+        capability = result["capabilities"][0]
+
+        self.assertEqual(capability["id"], "builtin.materials")
+        self.assertFalse(capability["loaded"])
+        self.assertIn("ensure_principled_material", capability["description"])
+        self.assertNotIn(module_name, sys.modules)
+
+    def test_load_activates_builtin_for_tools_proxy(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        result = eval_core.run_code(
+            "runtime.load('builtin.scene_info')\n"
+            "__result__ = {\n"
+            "    'module': tools.scene_info.__name__,\n"
+            "    'state': runtime.list(),\n"
+            "}"
+        )
+
+        self.assertEqual(result["module"], "blender_agent.builtins.scene_info")
+        self.assertEqual(
+            [item["id"] for item in result["state"]["loaded"]],
+            ["builtin.scene_info"],
+        )
+        self.assertEqual(result["state"]["revision"], 1)
+
+    def test_tools_proxy_rejects_capability_before_load(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        result = eval_core.run_code("__result__ = tools.scene_info.__name__")
+
+        self.assertEqual(result["error"]["code"], "EXECUTION_ERROR")
+        self.assertIn("is not loaded", result["error"]["details"])
+
+    def test_unload_is_logical_and_keeps_module_cache(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        state = eval_core.run_code(
+            "runtime.load('builtin.scene_info')\n"
+            "runtime.unload('builtin.scene_info')\n"
+            "__result__ = runtime.list()"
+        )
+        after_unload = eval_core.run_code("__result__ = tools.scene_info.__name__")
+
+        self.assertEqual(state["loaded"], [])
+        self.assertEqual(state["revision"], 2)
+        self.assertEqual(after_unload["error"]["code"], "EXECUTION_ERROR")
+        self.assertIn("scene_info", eval_core._loader.loaded_names())
+
+    def test_legacy_get_builtin_loads_and_activates(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        state = eval_core.run_code(
+            "module = get_builtin('scene_info')\n"
+            "__result__ = {'module': module.__name__, 'state': runtime.list()}"
+        )
+
+        self.assertEqual(state["module"], "blender_agent.builtins.scene_info")
+        self.assertEqual(state["state"]["loaded"][0]["id"], "builtin.scene_info")
+
+    def test_newly_loaded_docs_stay_attached_to_their_task(self):
+        _loader, eval_core, _server = load_runtime_modules()
+        result = {}
+        worker = threading.Thread(
+            target=lambda: result.update(
+                outcome=eval_core.run_code_from_thread(
+                    "runtime.load('builtin.materials')\n"
+                    "__result__ = runtime.list()",
+                    timeout=1.0,
+                )
+            )
+        )
+        worker.start()
+        deadline = time.monotonic() + 1.0
+        while eval_core._pending_tasks.qsize() < 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+        eval_core._timer_callback()
+        worker.join()
+
+        outcome = result["outcome"]
+        self.assertEqual(outcome.status, "succeeded")
+        self.assertEqual(len(outcome.docs), 1)
+        self.assertIn("[builtin: materials", outcome.docs[0])
+        self.assertIn("ensure_principled_material", outcome.docs[0])
+
+    def test_explicit_describe_prevents_duplicate_load_doc(self):
+        _loader, eval_core, _server = load_runtime_modules()
+        eval_core.run_code("__result__ = runtime.describe('builtin.materials')")
+        result = {}
+        worker = threading.Thread(
+            target=lambda: result.update(
+                outcome=eval_core.run_code_from_thread(
+                    "runtime.load('builtin.materials')\n"
+                    "__result__ = runtime.list()",
+                    timeout=1.0,
+                )
+            )
+        )
+        worker.start()
+        deadline = time.monotonic() + 1.0
+        while eval_core._pending_tasks.qsize() < 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+
+        eval_core._timer_callback()
+        worker.join()
+
+        self.assertEqual(result["outcome"].status, "succeeded")
+        self.assertEqual(result["outcome"].docs, ())
+
+
 class StreamableHTTPTests(unittest.IsolatedAsyncioTestCase):
     async def test_port_conflict_fails_without_runtime_or_timer(self):
         _loader, eval_core, server = load_runtime_modules()
@@ -262,6 +394,12 @@ class StreamableHTTPTests(unittest.IsolatedAsyncioTestCase):
 
                     tools = await session.list_tools()
                     self.assertEqual([tool.name for tool in tools.tools], ["eval_python_code"])
+                    description = tools.tools[0].description or ""
+                    self.assertIn("runtime.search(query)", description)
+                    self.assertNotIn(
+                        "创建/复用 Principled 材质、应用常见预设",
+                        description,
+                    )
 
                     result = await session.call_tool(
                         "eval_python_code",

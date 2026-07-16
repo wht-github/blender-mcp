@@ -12,6 +12,9 @@ import bpy
 from typing import Optional
 
 SUMMARY = "创建/复用 Principled 材质、应用常见预设、批量赋给对象，并按面索引分配材质"
+TAGS = ["material", "shader", "principled", "texture", "faces", "材质", "着色器"]
+SIDE_EFFECTS = "write"
+RESULT_TYPES = ["object"]
 
 DESCRIPTION = """
 materials builtin — 材质创建与分配

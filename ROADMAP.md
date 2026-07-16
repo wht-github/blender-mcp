@@ -26,6 +26,8 @@ runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONT
 - Windows x64 / Blender 5.1 / Python 3.13 安装包构建通过。
 - 已有协议级测试、队列测试和真实 Blender 5.1 端到端 smoke test。
 - builtin 摘要通过 AST 读取，不再为了发现文档而执行模块。
+- Runtime Context R1 已完成：支持能力搜索、精确描述、逻辑加载/卸载和 `tools`
+  代理，MCP 常驻 description 不再枚举全部 builtin。
 
 当前仍属于 Alpha：任意 Python 具有完整 Blender 和本机权限，执行中的 Python
 无法被安全强制中断，也尚未提供场景 checkpoint、操作确认和正式发布流程。
@@ -34,7 +36,7 @@ runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONT
 
 | 里程碑 | 建议周期 | 目标 | 发布判断 |
 |---|---:|---|---|
-| R：Runtime Context | 2–4 周 | 能力按需披露、加载和复用，Agent 可沉淀运行时函数 | 当前最高优先级 |
+| R：Runtime Context | 2–4 周 | 能力按需披露、加载和复用，Agent 可沉淀运行时函数 | R1 完成，R2 下一步 |
 | M1：执行可靠性 | 1 周 | 所有请求有明确状态、错误和容量边界 | 可供个人日常使用 |
 | M2：安全与恢复 | 1–2 周 | 连接受控，场景修改可确认、可恢复 | 可邀请小范围测试 |
 | M3：测试与兼容 | 1–2 周 | 真实 Blender 任务可重复验证 | 可发布 Beta |
@@ -60,7 +62,7 @@ runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONT
 
 实施顺序：
 
-1. R1：统一能力目录与渐进披露。
+1. R1：统一能力目录与渐进披露（已完成，2026-07-16）。
 2. R2：显式 Runtime Context 和跨 eval 状态。
 3. R3：Runtime Function 定义、调用、依赖和生命周期。
 4. R4：用户批准的持久化与 builtin 晋升流程。
@@ -232,8 +234,8 @@ runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONT
 
 ## 近期执行顺序
 
-1. 完成 Runtime Context 的 R1：能力目录、搜索、描述、加载和卸载。
-2. 完成 R2/R3：显式 runtime ID、干净执行上下文和 runtime function。
+1. 完成 R2：显式 runtime ID、干净执行上下文、manifest、过期和隔离。
+2. 完成 R3：runtime function 的定义、调用、依赖和生命周期。
 3. 在现有 M1 可靠性基础上补齐 Runtime Context 的隔离、容量和失败测试。
 4. 增加 token、确认模式和 checkpoint/undo，并用于函数持久化审批。
 5. 建立 20 个 golden tasks，验证“搜索 → 加载 → 执行 → 封装 → 复用”完整链路。

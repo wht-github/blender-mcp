@@ -11,6 +11,9 @@ import tempfile
 import bpy
 
 SUMMARY = "纯截图：使用显式接口截取指定编辑器区域或渲染结果；对象聚焦截图请优先用 viewport builtin"
+TAGS = ["screenshot", "viewport", "render", "image", "png", "截图", "渲染", "图像"]
+SIDE_EFFECTS = "mixed"
+RESULT_TYPES = ["image", "object"]
 
 DESCRIPTION = """
 screenshot builtin — Viewport 画面截取

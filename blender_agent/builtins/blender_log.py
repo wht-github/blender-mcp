@@ -12,6 +12,9 @@ from contextlib import redirect_stdout, redirect_stderr
 from typing import Optional
 
 SUMMARY = "获取 Blender 操作日志（Info 日志）和脚本 print 输出，支持关键词过滤"
+TAGS = ["log", "diagnostics", "debug", "history", "stdout", "stderr", "日志", "诊断"]
+SIDE_EFFECTS = "mixed"
+RESULT_TYPES = ["text", "object", "array"]
 
 DESCRIPTION = """
 blender_log builtin — 日志获取与过滤
