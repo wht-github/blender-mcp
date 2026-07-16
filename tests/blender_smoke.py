@@ -70,6 +70,7 @@ def main() -> None:
                                     "    'blender': bpy.app.version_string,\n"
                                     "    'found': any(\n"
                                     "        item['id'] == 'builtin.scene_info'\n"
+                                    "        or item.get('load_id') == 'builtin.scene_info'\n"
                                     "        for item in matches\n"
                                     "    ),\n"
                                     "    'module': tools.scene_info.__name__,\n"

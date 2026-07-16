@@ -28,6 +28,8 @@ runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONT
 - builtin 摘要通过 AST 读取，不再为了发现文档而执行模块。
 - Runtime Context R1 已完成：支持能力搜索、精确描述、逻辑加载/卸载和 `tools`
   代理，MCP 常驻 description 不再枚举全部 builtin。
+- builtin 搜索已细化到函数级操作 ID，并披露签名、副作用、UI context、成本和
+  结果类型；核心 builtin 增加 Blender 5.1 行为集成测试。
 
 当前仍属于 Alpha：任意 Python 具有完整 Blender 和本机权限，执行中的 Python
 无法被安全强制中断，也尚未提供场景 checkpoint、操作确认和正式发布流程。

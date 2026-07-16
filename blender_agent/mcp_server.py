@@ -38,7 +38,7 @@ def _build_tool_description(_loader: BuiltinLoader) -> str:
         "能力使用顺序：\n"
         "  1. 用 runtime.list() 查看当前已加载能力\n"
         "  2. 不确定能力时用 runtime.search(query) 搜索摘要\n"
-        "  3. 用 runtime.describe('builtin.name') 查看精确 API\n"
+        "  3. 优先用 runtime.describe('builtin.name.operation') 查看单个操作的精确 API\n"
         "  4. 用 runtime.load('builtin.name') 加载后，通过 tools.name 调用\n"
         "  5. 任务结束可用 runtime.unload('builtin.name') 逻辑卸载\n\n"
         "兼容接口：get_builtin('name') 会加载并激活 builtin；"

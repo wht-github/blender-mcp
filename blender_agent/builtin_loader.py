@@ -25,6 +25,35 @@ _BUILTINS_DIR = Path(__file__).parent / "builtins"
 
 
 @dataclass(frozen=True)
+class BuiltinOperationMetadata:
+    name: str
+    capability_id: str
+    load_id: str
+    signature: str
+    summary: str
+    tags: tuple[str, ...]
+    side_effects: str
+    result_types: tuple[str, ...]
+    requires_ui_context: bool
+    cost: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.capability_id,
+            "load_id": self.load_id,
+            "name": self.name,
+            "kind": "builtin_operation",
+            "signature": self.signature,
+            "summary": self.summary,
+            "tags": list(self.tags),
+            "side_effects": self.side_effects,
+            "result_types": list(self.result_types),
+            "requires_ui_context": self.requires_ui_context,
+            "cost": self.cost,
+        }
+
+
+@dataclass(frozen=True)
 class BuiltinMetadata:
     name: str
     capability_id: str
@@ -33,6 +62,7 @@ class BuiltinMetadata:
     tags: tuple[str, ...]
     side_effects: str
     result_types: tuple[str, ...]
+    operations: tuple[BuiltinOperationMetadata, ...]
 
     def as_dict(self, *, include_description: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -43,6 +73,7 @@ class BuiltinMetadata:
             "tags": list(self.tags),
             "side_effects": self.side_effects,
             "result_types": list(self.result_types),
+            "operation_count": len(self.operations),
         }
         if include_description:
             result["description"] = self.description
@@ -73,6 +104,8 @@ class BuiltinLoader:
             raw_tags = self._read_literal(path, "TAGS")
             raw_side_effects = self._read_literal(path, "SIDE_EFFECTS")
             raw_result_types = self._read_literal(path, "RESULT_TYPES")
+            raw_operations = self._read_literal(path, "OPERATIONS")
+            operations = self._parse_operations(name, raw_operations)
             self._metadata[name] = BuiltinMetadata(
                 name=name,
                 capability_id=f"builtin.{name}",
@@ -86,6 +119,7 @@ class BuiltinLoader:
                     else "mixed"
                 ),
                 result_types=self._string_tuple(raw_result_types, fallback=("text",)),
+                operations=operations,
             )
 
     def get_summaries(self) -> str:
@@ -121,17 +155,43 @@ class BuiltinLoader:
         return module
 
     def normalize_name(self, name: str) -> str:
-        """Accept both ``scene_info`` and the stable ``builtin.scene_info`` ID."""
-        normalized = name.removeprefix("builtin.")
+        """Accept module IDs and validate optional ``builtin.module.operation`` IDs."""
+        value = name.removeprefix("builtin.")
+        normalized, separator, operation_name = value.partition(".")
         if normalized not in self._registry:
             available = [metadata.capability_id for metadata in self._metadata.values()]
             raise ModuleNotFoundError(
                 f"Builtin '{name}' not found. Available capability IDs: {available}"
             )
+        if separator and not any(
+            operation.name == operation_name
+            for operation in self._metadata[normalized].operations
+        ):
+            available = [
+                operation.capability_id
+                for operation in self._metadata[normalized].operations
+            ]
+            raise ModuleNotFoundError(
+                f"Builtin operation '{name}' not found. Available operations: {available}"
+            )
         return normalized
 
     def get_metadata(self, name: str) -> BuiltinMetadata:
         return self._metadata[self.normalize_name(name)]
+
+    def get_operation_metadata(self, capability_id: str) -> BuiltinOperationMetadata | None:
+        value = capability_id.removeprefix("builtin.")
+        module_name, separator, operation_name = value.partition(".")
+        if not separator:
+            return None
+        metadata = self.get_metadata(module_name)
+        for operation in metadata.operations:
+            if operation.name == operation_name:
+                return operation
+        raise ModuleNotFoundError(
+            f"Builtin operation '{capability_id}' not found. "
+            f"Available operations: {[item.capability_id for item in metadata.operations]}"
+        )
 
     def list_metadata(self) -> list[BuiltinMetadata]:
         return list(self._metadata.values())
@@ -245,3 +305,45 @@ class BuiltinLoader:
         if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
             return tuple(value)
         return fallback
+
+    @staticmethod
+    def _parse_operations(
+        module_name: str,
+        value: Any,
+    ) -> tuple[BuiltinOperationMetadata, ...]:
+        if not isinstance(value, (list, tuple)):
+            return ()
+
+        operations = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            signature = item.get("signature")
+            summary = item.get("summary")
+            if not all(isinstance(field, str) and field for field in (name, signature, summary)):
+                continue
+            side_effects = item.get("side_effects", "mixed")
+            if side_effects not in {"read", "write", "mixed"}:
+                side_effects = "mixed"
+            cost = item.get("cost", "low")
+            if cost not in {"low", "medium", "high"}:
+                cost = "low"
+            operations.append(
+                BuiltinOperationMetadata(
+                    name=name,
+                    capability_id=f"builtin.{module_name}.{name}",
+                    load_id=f"builtin.{module_name}",
+                    signature=signature,
+                    summary=summary,
+                    tags=BuiltinLoader._string_tuple(item.get("tags"), fallback=()),
+                    side_effects=side_effects,
+                    result_types=BuiltinLoader._string_tuple(
+                        item.get("result_types"),
+                        fallback=("object",),
+                    ),
+                    requires_ui_context=bool(item.get("requires_ui_context", False)),
+                    cost=cost,
+                )
+            )
+        return tuple(operations)

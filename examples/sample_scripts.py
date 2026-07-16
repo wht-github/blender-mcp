@@ -66,16 +66,15 @@ __result__ = execute()
 # ── 示例 2：找出缺少材质的 Mesh 并截图 ────────────────────────────────────────
 EXAMPLE_FIND_BARE_MESH = """
 def execute():
-    scene_info = get_builtin('scene_info')
-    viewport = get_builtin('viewport')
+    runtime.load('builtin.scene_info', 'builtin.viewport')
 
     # 脚本端过滤，不污染上下文
-    bare = scene_info.find_objects(type='MESH', no_material=True)
+    bare = tools.scene_info.find_objects(type='MESH', no_material=True)
     if not bare:
         return "所有 Mesh 对象均已有材质"
 
-    img = viewport.capture_objects([bare[0]], width=1024)
-    return viewport.as_result(
+    img = tools.viewport.capture_objects([bare[0]], width=1024)
+    return tools.viewport.as_result(
         img,
         message='缺少材质对象截图',
         missing_material_count=len(bare),
@@ -89,36 +88,31 @@ __result__ = execute()
 # ── 示例 3：聚焦当前选中零件并截图 ─────────────────────────────────────────────
 EXAMPLE_CAPTURE_SELECTED_PARTS = """
 def execute():
-    viewport = get_builtin('viewport')
+    runtime.load('builtin.viewport')
 
-    img = viewport.capture_selection(
+    img = tools.viewport.capture_selection(
         width=1280,
         height=720,
     )
-    return viewport.as_result(
+    return tools.viewport.as_result(
         img,
         message='当前选中零件截图',
-        selected=viewport.get_selected_objects(),
+        selected=tools.viewport.get_selected_objects(),
     )
 
 __result__ = execute()
 """
 
 
-# ── 示例 4：分析与 bpy 相关的错误日志 ─────────────────────────────────────────
+# ── 示例 4：分析 Agent 最近的失败与 Runtime 状态 ───────────────────────────────
 EXAMPLE_FILTER_LOGS = """
 def execute():
-    log = get_builtin('blender_log')
-    logs = log.get_info_log(limit=100)
-
-    # 脚本端过滤，避免 100 条全进上下文
-    relevant = [l for l in logs
-                if any(kw in l.get('message', '').lower()
-                       for kw in ['error', 'warning', 'missing'])]
+    runtime.load('builtin.blender_log')
+    relevant = tools.blender_log.get_recent_errors(limit=10)
     return {
-        "total": len(logs),
+        "runtime": tools.blender_log.get_runtime_status(),
         "relevant_count": len(relevant),
-        "relevant": relevant[:10],   # 最多返回 10 条
+        "relevant": relevant,
     }
 
 __result__ = execute()
@@ -129,7 +123,8 @@ __result__ = execute()
 # ── 示例 5：用 materials builtin 创建并分配材质 ─────────────────────────────────
 EXAMPLE_ASSIGN_MATERIALS = """
 def execute():
-    materials = get_builtin('materials')
+    runtime.load('builtin.materials')
+    materials = tools.materials
 
     materials.create_preset(
         'Demo_Body_Red',

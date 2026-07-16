@@ -15,6 +15,62 @@ SUMMARY = "创建/复用 Principled 材质、应用常见预设、批量赋给�
 TAGS = ["material", "shader", "principled", "texture", "faces", "材质", "着色器"]
 SIDE_EFFECTS = "write"
 RESULT_TYPES = ["object"]
+OPERATIONS = [
+    {
+        "name": "ensure_principled_material",
+        "signature": "ensure_principled_material(name, reuse=True, reset_nodes=False, inputs=None, base_color=None, metallic=None, roughness=None, transmission=None, ior=None, alpha=None, specular=None, emission_color=None, emission_strength=None, blend_method=None, use_screen_refraction=None) -> dict",
+        "summary": "创建或复用简单 Principled 材质；复杂 Surface 节点图默认拒绝隐式改写",
+        "tags": ["principled", "shader", "create", "材质"],
+        "side_effects": "write",
+        "result_types": ["object"],
+        "cost": "low",
+    },
+    {
+        "name": "create_preset",
+        "signature": "create_preset(name, preset, reuse=True, reset_nodes=False, overrides=None) -> dict",
+        "summary": "用 paint、painted_metal、glass、rubber 或 metal 预设创建材质",
+        "tags": ["preset", "glass", "metal", "rubber", "预设"],
+        "side_effects": "write",
+        "result_types": ["object"],
+        "cost": "low",
+    },
+    {
+        "name": "apply_material_to_objects",
+        "signature": "apply_material_to_objects(material_name, object_names, replace_all=True, append=False, slot=0) -> dict",
+        "summary": "把材质批量应用到对象材质槽并报告缺失或不支持的对象",
+        "tags": ["assign", "objects", "slots", "批量"],
+        "side_effects": "write",
+        "result_types": ["object"],
+        "cost": "low",
+    },
+    {
+        "name": "ensure_material_slots",
+        "signature": "ensure_material_slots(object_name, material_names, append=False) -> dict",
+        "summary": "确保对象具有指定材质槽，或按给定顺序重建材质槽",
+        "tags": ["slots", "object", "材质槽"],
+        "side_effects": "write",
+        "result_types": ["object"],
+        "cost": "low",
+    },
+    {
+        "name": "assign_faces_by_index",
+        "signature": "assign_faces_by_index(object_name, face_indices, material_name=None, material_index=None) -> dict",
+        "summary": "在 Object 或 Edit Mode 中按面索引可靠分配有效材质槽",
+        "tags": ["faces", "mesh", "index", "edit_mode", "面"],
+        "side_effects": "write",
+        "result_types": ["object"],
+        "cost": "low",
+    },
+    {
+        "name": "get_material_info",
+        "signature": "get_material_info(name) -> dict",
+        "summary": "读取材质节点数量和常用 Principled 输入摘要",
+        "tags": ["inspect", "shader", "query", "查询"],
+        "side_effects": "read",
+        "result_types": ["object"],
+        "cost": "low",
+    },
+]
 
 DESCRIPTION = """
 materials builtin — 材质创建与分配
@@ -39,6 +95,8 @@ materials builtin — 材质创建与分配
   ) -> dict
     创建或复用一个 Principled 材质，并设置常见输入。
     自动兼容部分 Blender 版本的 socket 名差异，例如 Transmission / Transmission Weight。
+    若复用材质的 Surface 已连接 Mix Shader、节点组等复杂图，默认返回错误；
+    只有 reset_nodes=True 才会显式替换整个节点图。
 
   create_preset(name: str, preset: str, reuse=True, reset_nodes=False, overrides=None) -> dict
     用内置预设创建材质。支持：'paint' | 'painted_metal' | 'glass' | 'rubber' | 'metal'
@@ -55,7 +113,7 @@ materials builtin — 材质创建与分配
 
   assign_faces_by_index(object_name: str, face_indices, material_name=None, material_index=None) -> dict
     为指定对象的面索引批量设置材质。
-    可直接给 material_index，或给 material_name 自动找到/追加到材质槽。
+    material_index 与 material_name 必须二选一；支持 Object Mode 和 Edit Mode。
 
   get_material_info(name: str) -> dict
     返回材质节点与常见 Principled 输入摘要。
@@ -225,25 +283,30 @@ def _ensure_principled_setup(material, reset_nodes: bool = False):
         node_tree.nodes.clear()
 
     output = _ensure_output_node(node_tree)
+    surface_socket = output.inputs.get('Surface')
+    if surface_socket is None:
+        raise RuntimeError('Material output node is missing Surface input')
+
+    surface_links = [
+        link
+        for link in surface_socket.links
+        if link.to_node == output and link.to_socket == surface_socket
+    ]
+    if surface_links:
+        source_node = surface_links[0].from_node
+        if source_node.type == 'BSDF_PRINCIPLED':
+            return source_node
+        raise ValueError(
+            f"Material '{material.name}' uses a complex Surface node graph "
+            f"({source_node.type}). Pass reset_nodes=True to replace it explicitly."
+        )
+
     bsdf = _find_principled_bsdf(material)
     if bsdf is None:
         bsdf = node_tree.nodes.new('ShaderNodeBsdfPrincipled')
         bsdf.location = (0, 0)
 
-    surface_socket = output.inputs.get('Surface')
-    if surface_socket is None:
-        raise RuntimeError('Material output node is missing Surface input')
-
-    has_link = False
-    for link in node_tree.links:
-        if link.to_node == output and link.to_socket == surface_socket and link.from_node == bsdf:
-            has_link = True
-            break
-
-    if not has_link:
-        for link in list(node_tree.links):
-            if link.to_node == output and link.to_socket == surface_socket:
-                node_tree.links.remove(link)
+    if not surface_links:
         node_tree.links.new(bsdf.outputs['BSDF'], surface_socket)
 
     return bsdf
@@ -264,8 +327,15 @@ def _get_material_collection(obj):
 
 
 def _set_material_render_options(material, blend_method: Optional[str], use_screen_refraction: Optional[bool]):
-    if blend_method is not None and hasattr(material, 'blend_method'):
-        material.blend_method = blend_method
+    if blend_method is not None:
+        if hasattr(material, 'blend_method'):
+            material.blend_method = blend_method
+        elif hasattr(material, 'surface_render_method'):
+            render_method = {
+                'BLEND': 'BLENDED',
+                'HASHED': 'DITHERED',
+            }.get(blend_method, blend_method)
+            material.surface_render_method = render_method
     if use_screen_refraction is not None and hasattr(material, 'use_screen_refraction'):
         material.use_screen_refraction = bool(use_screen_refraction)
 
@@ -402,6 +472,9 @@ def apply_material_to_objects(
     append: bool = False,
     slot: int = 0,
 ) -> dict:
+    if replace_all and append:
+        raise ValueError("replace_all and append cannot both be true")
+
     material = bpy.data.materials.get(material_name)
     if material is None:
         material_name = ensure_principled_material(material_name)['name']
@@ -437,6 +510,7 @@ def apply_material_to_objects(
             'object': obj.name,
             'slot': applied_slot,
             'materials': [slot.material.name if slot.material else None for slot in obj.material_slots],
+            'shared_data_users': getattr(obj.data, 'users', 1),
         })
 
     return {
@@ -473,8 +547,8 @@ def assign_faces_by_index(
         raise KeyError(f"Object not found: {object_name}")
     if obj.type != 'MESH':
         raise TypeError(f"Object '{object_name}' is not a mesh")
-    if material_name is None and material_index is None:
-        raise ValueError('Either material_name or material_index must be provided')
+    if (material_name is None) == (material_index is None):
+        raise ValueError('Provide exactly one of material_name or material_index')
 
     resolved_index = material_index
     slot_added = False
@@ -482,27 +556,45 @@ def assign_faces_by_index(
         resolved_index, slot_added = _resolve_material_index(obj, material_name)
 
     assert resolved_index is not None
-    if obj.mode == 'EDIT':
-        obj.update_from_editmode()
+    resolved_index = int(resolved_index)
+    slot_count = len(obj.material_slots)
+    if not 0 <= resolved_index < slot_count:
+        raise ValueError(
+            f"material_index {resolved_index} is outside the valid range "
+            f"0..{slot_count - 1} for object '{object_name}'"
+        )
 
     mesh = obj.data
-    polygons = mesh.polygons
     unique_indices = sorted({int(index) for index in face_indices})
     applied = []
     skipped = []
-    for index in unique_indices:
-        if 0 <= index < len(polygons):
-            polygons[index].material_index = int(resolved_index)
-            applied.append(index)
-        else:
-            skipped.append(index)
+    if obj.mode == 'EDIT':
+        import bmesh
 
-    mesh.update()
+        edit_mesh = bmesh.from_edit_mesh(mesh)
+        edit_mesh.faces.ensure_lookup_table()
+        for index in unique_indices:
+            if 0 <= index < len(edit_mesh.faces):
+                edit_mesh.faces[index].material_index = resolved_index
+                applied.append(index)
+            else:
+                skipped.append(index)
+        bmesh.update_edit_mesh(mesh, loop_triangles=False, destructive=False)
+    else:
+        polygons = mesh.polygons
+        for index in unique_indices:
+            if 0 <= index < len(polygons):
+                polygons[index].material_index = resolved_index
+                applied.append(index)
+            else:
+                skipped.append(index)
+        mesh.update()
 
+    resolved_material = obj.material_slots[resolved_index].material
     return {
         'object': obj.name,
-        'material_index': int(resolved_index),
-        'material_name': material_name,
+        'material_index': resolved_index,
+        'material_name': resolved_material.name if resolved_material else None,
         'slot_added': slot_added,
         'applied_faces': applied,
         'skipped_faces': skipped,

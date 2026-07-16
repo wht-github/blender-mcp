@@ -25,29 +25,60 @@ class CapabilityRegistry:
             return []
 
         tokens = _SEARCH_TOKEN.findall(query)
-        ranked: list[tuple[float, str, BuiltinMetadata]] = []
+        ranked: list[tuple[float, str, dict[str, Any]]] = []
         for metadata in self._loader.list_metadata():
-            score = self._score(metadata, query, tokens)
+            score = self._score(
+                metadata.name,
+                metadata.capability_id,
+                metadata.tags,
+                metadata.summary,
+                query,
+                tokens,
+            )
             if score > 0:
-                ranked.append((score, metadata.capability_id, metadata))
+                ranked.append((score, metadata.capability_id, metadata.as_dict()))
+            for operation in metadata.operations:
+                operation_score = self._score(
+                    operation.name,
+                    operation.capability_id,
+                    (*metadata.tags, *operation.tags),
+                    operation.summary,
+                    query,
+                    tokens,
+                )
+                if operation_score > 0:
+                    ranked.append(
+                        (
+                            operation_score + 2,
+                            operation.capability_id,
+                            operation.as_dict(),
+                        )
+                    )
 
         ranked.sort(key=lambda item: (-item[0], item[1]))
         safe_limit = max(1, min(int(limit), 20))
         return [
             {
-                **metadata.as_dict(),
+                **item,
                 "score": round(score, 3),
             }
-            for score, _capability_id, metadata in ranked[:safe_limit]
+            for score, _capability_id, item in ranked[:safe_limit]
         ]
 
     def describe(self, *capability_ids: str) -> list[dict[str, Any]]:
         if not capability_ids:
             raise ValueError("At least one capability ID is required")
-        descriptions = [
-            self._loader.get_metadata(capability_id).as_dict(include_description=True)
-            for capability_id in capability_ids
-        ]
+        descriptions = []
+        for capability_id in capability_ids:
+            operation = self._loader.get_operation_metadata(capability_id)
+            if operation is not None:
+                descriptions.append(operation.as_dict())
+            else:
+                descriptions.append(
+                    self._loader.get_metadata(capability_id).as_dict(
+                        include_description=True
+                    )
+                )
         self._loader.mark_descriptions_shown(*capability_ids)
         return descriptions
 
@@ -64,12 +95,19 @@ class CapabilityRegistry:
         return len(self._loader.list_metadata())
 
     @staticmethod
-    def _score(metadata: BuiltinMetadata, query: str, tokens: list[str]) -> float:
-        name = metadata.name.lower()
-        capability_id = metadata.capability_id.lower()
-        tags = [tag.lower() for tag in metadata.tags]
-        summary = metadata.summary.lower()
-        searchable = " ".join((capability_id, summary, *tags))
+    def _score(
+        name: str,
+        capability_id: str,
+        tags: tuple[str, ...],
+        summary: str,
+        query: str,
+        tokens: list[str],
+    ) -> float:
+        name = name.lower()
+        capability_id = capability_id.lower()
+        lowered_tags = [tag.lower() for tag in tags]
+        summary = summary.lower()
+        searchable = " ".join((capability_id, summary, *lowered_tags))
         score = 0.0
 
         if query == name or query == capability_id:
@@ -82,9 +120,9 @@ class CapabilityRegistry:
                 score += 18
             elif token in name or token in capability_id:
                 score += 10
-            if token in tags:
+            if token in lowered_tags:
                 score += 8
-            elif any(token in tag or tag in token for tag in tags):
+            elif any(token in tag or tag in token for tag in lowered_tags):
                 score += 5
             if token in summary:
                 score += 3
@@ -106,7 +144,8 @@ class RuntimeContext:
     def describe(self, *capability_ids: str) -> dict[str, Any]:
         descriptions = self.registry.describe(*capability_ids)
         for item in descriptions:
-            item["loaded"] = item["name"] in self._loaded
+            module_name = self.registry.normalize_name(item.get("load_id", item["id"]))
+            item["loaded"] = module_name in self._loaded
         return {"capabilities": descriptions}
 
     def load(self, *capability_ids: str) -> dict[str, Any]:

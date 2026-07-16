@@ -173,7 +173,9 @@ class ExecutionQueueTests(unittest.TestCase):
 
         self.assertEqual(outcome.status, "failed")
         self.assertEqual(outcome.result["error"]["code"], "CODE_TOO_LARGE")
-        self.assertEqual(eval_core.get_task_history()[0]["request_id"], outcome.request_id)
+        history = eval_core.get_task_history()[0]
+        self.assertEqual(history["request_id"], outcome.request_id)
+        self.assertEqual(history["error_code"], "CODE_TOO_LARGE")
 
     def test_stop_cancels_queued_task(self):
         _loader, eval_core, _server = load_runtime_modules()
@@ -233,6 +235,18 @@ class ExecutionQueueTests(unittest.TestCase):
 
 
 class RuntimeContextTests(unittest.TestCase):
+    def test_all_declared_operations_exist_on_their_builtin_modules(self):
+        loader_module, _eval_core, _server = load_runtime_modules()
+        loader = loader_module.BuiltinLoader()
+
+        for metadata in loader.list_metadata():
+            module = loader.load(metadata.name)
+            for operation in metadata.operations:
+                self.assertTrue(
+                    callable(getattr(module, operation.name, None)),
+                    operation.capability_id,
+                )
+
     def test_search_returns_compact_metadata_without_importing_builtin(self):
         _loader, eval_core, _server = load_runtime_modules()
         module_name = "blender_agent.builtins.viewport"
@@ -244,6 +258,28 @@ class RuntimeContextTests(unittest.TestCase):
         ids = [item["id"] for item in result["matches"]]
         self.assertIn("builtin.viewport", ids)
         self.assertTrue(all("description" not in item for item in result["matches"]))
+        self.assertNotIn(module_name, sys.modules)
+
+    def test_search_and_describe_can_target_one_builtin_operation(self):
+        _loader, eval_core, _server = load_runtime_modules()
+        module_name = "blender_agent.builtins.materials"
+
+        search = eval_core.run_code(
+            "__result__ = runtime.search('assign mesh faces material edit mode', limit=5)"
+        )
+        operation_ids = [item["id"] for item in search["matches"]]
+        self.assertIn("builtin.materials.assign_faces_by_index", operation_ids)
+
+        described = eval_core.run_code(
+            "__result__ = runtime.describe("
+            "'builtin.materials.assign_faces_by_index'"
+            ")"
+        )
+        operation = described["capabilities"][0]
+        self.assertEqual(operation["kind"], "builtin_operation")
+        self.assertEqual(operation["load_id"], "builtin.materials")
+        self.assertIn("material_index", operation["signature"])
+        self.assertNotIn("description", operation)
         self.assertNotIn(module_name, sys.modules)
 
     def test_describe_discloses_full_doc_without_loading(self):
@@ -277,6 +313,32 @@ class RuntimeContextTests(unittest.TestCase):
             ["builtin.scene_info"],
         )
         self.assertEqual(result["state"]["revision"], 1)
+
+    def test_loading_operation_id_activates_its_module(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        result = eval_core.run_code(
+            "load_result = runtime.load("
+            "'builtin.screenshot.capture_viewport'"
+            ")\n"
+            "__result__ = {\n"
+            "    'load_result': load_result,\n"
+            "    'module': tools.screenshot.__name__,\n"
+            "}"
+        )
+
+        self.assertEqual(result["load_result"]["loaded"], ["builtin.screenshot"])
+        self.assertEqual(result["module"], "blender_agent.builtins.screenshot")
+
+    def test_loading_unknown_operation_is_rejected(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        result = eval_core.run_code(
+            "__result__ = runtime.load('builtin.materials.not_a_real_operation')"
+        )
+
+        self.assertEqual(result["error"]["code"], "EXECUTION_ERROR")
+        self.assertIn("not_a_real_operation", result["error"]["details"])
 
     def test_tools_proxy_rejects_capability_before_load(self):
         _loader, eval_core, _server = load_runtime_modules()
@@ -361,6 +423,45 @@ class RuntimeContextTests(unittest.TestCase):
 
         self.assertEqual(result["outcome"].status, "succeeded")
         self.assertEqual(result["outcome"].docs, ())
+
+    def test_screenshot_builtin_rejects_oversize_and_reserved_result_fields(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        oversized = eval_core.run_code(
+            "runtime.load('builtin.screenshot')\n"
+            "__result__ = tools.screenshot._resolve_dimensions("
+            "8192, 8192, 1920, 1080"
+            ")"
+        )
+        reserved = eval_core.run_code(
+            "__result__ = tools.screenshot.as_result("
+            "'abc', screenshot='override'"
+            ")"
+        )
+
+        self.assertEqual(oversized["error"]["code"], "EXECUTION_ERROR")
+        self.assertIn("4096", oversized["error"]["details"])
+        self.assertEqual(reserved["error"]["code"], "EXECUTION_ERROR")
+        self.assertIn("reserved fields", reserved["error"]["details"])
+
+    def test_diagnostics_builtin_reports_runtime_and_disables_nested_eval(self):
+        _loader, eval_core, _server = load_runtime_modules()
+
+        result = eval_core.run_code(
+            "runtime.load('builtin.blender_log')\n"
+            "__result__ = {\n"
+            "    'status': tools.blender_log.get_runtime_status(),\n"
+            "    'nested': tools.blender_log.capture_script_output("
+            "\"__result__ = 1\""
+            "),\n"
+            "}"
+        )
+
+        self.assertIn("queue", result["status"])
+        self.assertEqual(
+            result["nested"]["error"]["code"],
+            "DEPRECATED_NESTED_EVAL",
+        )
 
 
 class StreamableHTTPTests(unittest.IsolatedAsyncioTestCase):

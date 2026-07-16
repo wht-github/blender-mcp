@@ -1,122 +1,149 @@
 """
-blender_log.py — 获取 Blender 系统日志与信息报告
+blender_log.py — Blender Agent 运行时诊断
 
-通过钩子收集 Blender 的 Info 日志（操作历史）和运行时 print 输出。
-LLM 可在脚本中过滤，只返回相关条目，避免上下文污染。
+提供 Blender Agent 自身的任务历史、结构化错误和 Runtime Context 状态。
+不依赖 Blender 版本不稳定且通常不可访问的 Info Editor 内部报告。
 """
 
-import bpy
-import sys
-import io
-from contextlib import redirect_stdout, redirect_stderr
 from typing import Optional
 
-SUMMARY = "获取 Blender 操作日志（Info 日志）和脚本 print 输出，支持关键词过滤"
-TAGS = ["log", "diagnostics", "debug", "history", "stdout", "stderr", "日志", "诊断"]
-SIDE_EFFECTS = "mixed"
+SUMMARY = "查询 Agent 任务历史、最近结构化错误、队列和 Runtime Context 状态"
+TAGS = ["log", "diagnostics", "debug", "history", "queue", "runtime", "日志", "诊断"]
+SIDE_EFFECTS = "read"
 RESULT_TYPES = ["text", "object", "array"]
+OPERATIONS = [
+    {
+        "name": "get_task_history",
+        "signature": "get_task_history(limit=20, status=None) -> list[dict]",
+        "summary": "返回最近任务的 request ID、状态、耗时、摘要和结构化错误字段",
+        "tags": ["history", "tasks", "request_id", "历史"],
+        "side_effects": "read",
+        "result_types": ["array"],
+        "cost": "low",
+    },
+    {
+        "name": "get_recent_errors",
+        "signature": "get_recent_errors(limit=20) -> list[dict]",
+        "summary": "返回最近 failed、timed_out 或 cancelled 的 Agent 任务",
+        "tags": ["errors", "timeout", "failed", "错误"],
+        "side_effects": "read",
+        "result_types": ["array"],
+        "cost": "low",
+    },
+    {
+        "name": "get_runtime_status",
+        "signature": "get_runtime_status(history_limit=5) -> dict",
+        "summary": "返回执行队列、历史数量、当前已加载能力和 runtime revision",
+        "tags": ["runtime", "queue", "loaded", "状态"],
+        "side_effects": "read",
+        "result_types": ["object"],
+        "cost": "low",
+    },
+]
 
 DESCRIPTION = """
-blender_log builtin — 日志获取与过滤
+blender_log builtin — Agent 运行时诊断
 
 函数：
-  get_info_log(limit=50, filter_keyword=None) -> list[dict]
-    获取 Blender Info 区域的操作日志（相当于操作历史）。
-    每条 dict: {"type": str, "message": str}
-    filter_keyword: 若提供，只返回包含该关键词的条目（大小写不敏感）。
+  get_task_history(limit=20, status=None) -> list[dict]
+    返回最近任务的 request_id、状态、排队/执行耗时、代码摘要和错误字段。
+    status 可指定 queued/running/succeeded/failed/timed_out/cancelled。
 
-  capture_script_output(code: str) -> dict
-    执行一段 Python 代码并捕获其 print 输出。
-    返回 {"stdout": str, "stderr": str, "result": any}
-    注意：此函数内部调用 exec()，代码在当前命名空间运行。
+  get_recent_errors(limit=20) -> list[dict]
+    返回最近失败、超时或取消的任务。
 
-  get_error_log(limit=20) -> list[str]
-    返回最近的错误/警告类型日志。
+  get_runtime_status(history_limit=5) -> dict
+    返回当前队列、任务历史数量、已加载能力和 Runtime Context revision。
+
+兼容接口：
+  get_info_log() / get_error_log() 仍可调用，但数据来源是 Agent 任务历史，
+  不是 Blender Info Editor。capture_script_output() 已停用；请直接在外层
+  eval_python_code 脚本中执行代码并赋值 __result__。
 
 示例：
   log = get_builtin('blender_log')
 
-  # 只获取与 modifier 相关的操作历史
-  mod_logs = log.get_info_log(limit=100, filter_keyword='modifier')
-  return mod_logs
-
-  # 捕获脚本输出用于调试
-  output = log.capture_script_output("for obj in bpy.data.objects: print(obj.name)")
-  return output["stdout"]
+  failures = log.get_recent_errors(limit=10)
+  __result__ = {
+      "runtime": log.get_runtime_status(),
+      "failures": failures,
+  }
 """
 
 
-def get_info_log(limit: int = 50, filter_keyword: Optional[str] = None) -> list:
-    """获取 Blender Info 区域日志，可按关键词过滤。"""
-    logs = []
-    assert bpy.context.window_manager is not None
-    window_manager = bpy.context.window_manager
-    # Blender 4.x：Info 日志通过报告存储在 window_manager 的 reports 中
-    # 兜底方法：通过重定向 Info 区域读取
-    try:
-        for report in window_manager.reports:
-            entry = {
-                "type": str(report.type),
-                "message": report.message,
-            }
-            if filter_keyword is None or filter_keyword.lower() in report.message.lower():
-                logs.append(entry)
-    except AttributeError:
-        # Blender 某些版本没有直接的 reports 属性，尝试 Info 区域
-        logs = _read_info_area(limit)
+def _eval_core():
+    from .. import eval_core
 
-    # 按 filter
+    return eval_core
+
+
+def get_task_history(limit: int = 20, status: Optional[str] = None) -> list[dict]:
+    """Return newest-first Blender Agent task snapshots."""
+    safe_limit = max(0, min(int(limit), 50))
+    history = _eval_core().get_task_history(50 if status else safe_limit)
+    if status is not None:
+        normalized = status.strip().lower()
+        allowed = {
+            "queued",
+            "running",
+            "succeeded",
+            "failed",
+            "timed_out",
+            "cancelled",
+        }
+        if normalized not in allowed:
+            raise ValueError(f"Unknown task status '{status}'. Available: {sorted(allowed)}")
+        history = [item for item in history if item["status"] == normalized]
+    return history[:safe_limit]
+
+
+def get_recent_errors(limit: int = 20) -> list[dict]:
+    """Return recent failed, timed out, or cancelled task snapshots."""
+    error_statuses = {"failed", "timed_out", "cancelled"}
+    return [
+        item
+        for item in _eval_core().get_task_history(50)
+        if item["status"] in error_statuses
+    ][: max(0, min(int(limit), 50))]
+
+
+def get_runtime_status(history_limit: int = 5) -> dict:
+    """Return compact queue, history, and loaded capability state."""
+    return _eval_core().get_runtime_diagnostics(history_limit=history_limit)
+
+
+def get_info_log(limit: int = 50, filter_keyword: Optional[str] = None) -> list[dict]:
+    """Compatibility view over Agent task history, not Blender Info Editor."""
+    logs = [
+        {
+            "type": task["status"].upper(),
+            "message": task["code_summary"],
+            "request_id": task["request_id"],
+            "queue_ms": task["queue_ms"],
+            "execution_ms": task["execution_ms"],
+        }
+        for task in get_task_history(limit=limit)
+    ]
     if filter_keyword:
-        logs = [l for l in logs if filter_keyword.lower() in l.get("message", "").lower()]
-
-    return logs[-limit:]
-
-
-def _read_info_area(limit: int) -> list:
-    """备用：通过 Info 区域 space_data 读取日志。"""
-    logs = []
-    assert bpy.context.window_manager is not None
-    window_manager = bpy.context.window_manager
-    for window in window_manager.windows:
-        for area in window.screen.areas:
-            if area.type == "INFO":
-                # INFO 区域无直接 Python API 获取文本，返回空
-                break
+        keyword = filter_keyword.lower()
+        logs = [item for item in logs if keyword in item["message"].lower()]
     return logs
 
 
-def get_error_log(limit: int = 20) -> list:
-    """返回最近的错误/警告类型日志。"""
-    error_types = {"ERROR", "WARNING", "ERROR_INVALID_INPUT", "ERROR_INVALID_CONTEXT"}
-    logs = []
-    assert bpy.context.window_manager is not None
-    window_manager = bpy.context.window_manager
-    try:
-        for report in window_manager.reports:
-            if str(report.type) in error_types:
-                logs.append({"type": str(report.type), "message": report.message})
-    except AttributeError:
-        pass
-    return logs[-limit:]
+def get_error_log(limit: int = 20) -> list[dict]:
+    """Compatibility alias for get_recent_errors()."""
+    return get_recent_errors(limit=limit)
 
 
 def capture_script_output(code: str) -> dict:
-    """执行代码并捕获 stdout/stderr。"""
-    import bpy as _bpy
-    stdout_buf = io.StringIO()
-    stderr_buf = io.StringIO()
-    local_ns = {"bpy": _bpy}
-    result = None
-    with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
-        try:
-            exec(compile(code, "<capture>", "exec"), local_ns)
-            result = local_ns.get("__result__")
-        except Exception as e:
-            import traceback
-            print(traceback.format_exc(), file=sys.stderr)
-
+    """Deprecated compatibility stub; nested eval has intentionally been removed."""
+    del code
     return {
-        "stdout": stdout_buf.getvalue(),
-        "stderr": stderr_buf.getvalue(),
-        "result": result,
+        "error": {
+            "code": "DEPRECATED_NESTED_EVAL",
+            "message": (
+                "capture_script_output() is disabled. Execute the code directly in "
+                "eval_python_code and assign its value to __result__."
+            ),
+        }
     }

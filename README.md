@@ -47,8 +47,9 @@ __result__ = execute()
 
 不确定需要哪个 builtin 时，先执行
 `__result__ = runtime.search("聚焦没有材质的对象并截图")`，再用
-`runtime.describe("builtin.viewport")` 获取精确 API。完整文档只在描述或首次加载时
-披露，不会常驻在 MCP tool description 中。旧的 `get_builtin()` /
+`runtime.describe("builtin.viewport.capture_objects")` 获取单个操作的签名、副作用、
+UI context 要求和成本，再加载 `builtin.viewport`。完整模块文档只在模块描述或
+首次加载时披露，不会常驻在 MCP tool description 中。旧的 `get_builtin()` /
 `get_builtin_doc()` 接口仍然兼容。
 
 ## 构建 Blender 安装包
@@ -97,6 +98,14 @@ uv run --no-project --python 3.13 python package.py --skip-dependencies
 ```powershell
 uv run python -m unittest discover -s tests -v
 uv run --no-project --python 3.13 python package.py
+
+# 使用构建后的 zip 运行真实 Blender builtin 行为测试
+blender.exe --background --factory-startup --python-exit-code 1 `
+  --python tests/blender_builtins.py -- blender_agent.zip
+
+# 交互模式验证 VIEW_3D 截图成功路径；测试完成后 Blender 会自动退出
+blender.exe --factory-startup --python-exit-code 1 `
+  --python tests/blender_viewport_smoke.py -- blender_agent.zip
 ```
 
 主要源码：

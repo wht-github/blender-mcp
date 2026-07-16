@@ -18,6 +18,56 @@ SUMMARY = "检查截图：在同一 3D 视口中聚焦指定对象或当前选�
 TAGS = ["viewport", "focus", "selection", "screenshot", "image", "视口", "聚焦", "截图"]
 SIDE_EFFECTS = "mixed"
 RESULT_TYPES = ["image", "object", "array"]
+OPERATIONS = [
+    {
+        "name": "get_selected_objects",
+        "signature": "get_selected_objects() -> list[str]",
+        "summary": "返回当前 View Layer 中选中的对象名称",
+        "tags": ["selection", "query", "选择"],
+        "side_effects": "read",
+        "result_types": ["array"],
+        "cost": "low",
+    },
+    {
+        "name": "focus_objects",
+        "signature": "focus_objects(names) -> list[str]",
+        "summary": "在当前 View Layer 的一个 3D 视口中选中并框选对象",
+        "tags": ["focus", "frame", "view_selected", "聚焦"],
+        "side_effects": "write",
+        "result_types": ["array"],
+        "requires_ui_context": True,
+        "cost": "low",
+    },
+    {
+        "name": "capture_objects",
+        "signature": "capture_objects(names, width=None, height=None) -> str",
+        "summary": "聚焦对象并截图，随后恢复选择、可见性、活动对象和视口构图",
+        "tags": ["capture", "focus", "restore", "截图"],
+        "side_effects": "mixed",
+        "result_types": ["image"],
+        "requires_ui_context": True,
+        "cost": "medium",
+    },
+    {
+        "name": "capture_selection",
+        "signature": "capture_selection(width=None, height=None) -> str",
+        "summary": "截图当前选中对象并完整恢复视口状态",
+        "tags": ["selection", "capture", "截图"],
+        "side_effects": "mixed",
+        "result_types": ["image"],
+        "requires_ui_context": True,
+        "cost": "medium",
+    },
+    {
+        "name": "as_result",
+        "signature": "as_result(image_b64, message='当前视口截图', **extra_fields) -> dict",
+        "summary": "将 PNG base64 包装为 MCP 图片结果",
+        "tags": ["result", "image", "mcp"],
+        "side_effects": "read",
+        "result_types": ["object"],
+        "cost": "low",
+    },
+]
 
 DESCRIPTION = """
 viewport builtin — 视口聚焦与检查截图
@@ -32,7 +82,7 @@ viewport builtin — 视口聚焦与检查截图
 
     capture_objects(names: list[str], width=None, height=None) -> str
         在同一个 VIEW_3D 视口中聚焦指定对象并截图，返回 base64 PNG。
-        截图后会恢复原始选择与活动对象，避免污染用户当前选择。
+        截图后会恢复选择、活动对象、目标可见性和原始视口构图。
 
     capture_selection(width=None, height=None) -> str
         基于当前选中对象执行 capture_objects()。
@@ -52,8 +102,10 @@ viewport builtin — 视口聚焦与检查截图
 
 
 def _get_scene_objects() -> list[Any]:
-    assert bpy.context.scene is not None
-    return list(bpy.context.scene.objects)
+    view_layer = bpy.context.view_layer
+    if view_layer is None:
+        raise RuntimeError("No active View Layer")
+    return list(view_layer.objects)
 
 
 def _get_objects_by_name() -> dict[str, Any]:
@@ -65,12 +117,15 @@ def _resolve_objects(names: Iterable[str]) -> list[Any]:
     missing: list[str] = []
     seen = set()
 
+    if isinstance(names, str):
+        names = [names]
+    objects_by_name = _get_objects_by_name()
     for name in names:
         if name in seen:
             continue
         seen.add(name)
 
-        obj = bpy.data.objects.get(name)
+        obj = objects_by_name.get(name)
         if obj is None:
             missing.append(name)
             continue
@@ -137,7 +192,40 @@ def _set_selected_objects(objects: list[Any]) -> None:
         view_layer.objects.active = objects[-1] if objects else None
 
 
-def _snapshot_state(target_objects: list[Any]) -> dict[str, Any]:
+def _snapshot_view(view_context: dict[str, Any]) -> dict[str, Any]:
+    space_data = view_context.get("space_data")
+    region_3d = getattr(space_data, "region_3d", None)
+    if region_3d is None:
+        return {}
+    return {
+        "view_distance": float(region_3d.view_distance),
+        "view_location": region_3d.view_location.copy(),
+        "view_rotation": region_3d.view_rotation.copy(),
+        "view_perspective": region_3d.view_perspective,
+        "view_camera_zoom": float(region_3d.view_camera_zoom),
+        "view_camera_offset": tuple(region_3d.view_camera_offset),
+    }
+
+
+def _restore_view(view_context: dict[str, Any], state: dict[str, Any]) -> None:
+    if not state:
+        return
+    space_data = view_context.get("space_data")
+    region_3d = getattr(space_data, "region_3d", None)
+    if region_3d is None:
+        return
+    region_3d.view_distance = state["view_distance"]
+    region_3d.view_location = state["view_location"]
+    region_3d.view_rotation = state["view_rotation"]
+    region_3d.view_perspective = state["view_perspective"]
+    region_3d.view_camera_zoom = state["view_camera_zoom"]
+    region_3d.view_camera_offset = state["view_camera_offset"]
+
+
+def _snapshot_state(
+    target_objects: list[Any],
+    view_context: dict[str, Any],
+) -> dict[str, Any]:
     view_layer = bpy.context.view_layer
     active_name = None
     if view_layer is not None and view_layer.objects.active is not None:
@@ -146,17 +234,28 @@ def _snapshot_state(target_objects: list[Any]) -> dict[str, Any]:
     return {
         "selected": get_selected_objects(),
         "active": active_name,
-        "target_visibility": {obj.name: obj.hide_get() for obj in target_objects},
+        "target_visibility": {
+            obj.name: {
+                "hidden": obj.hide_get(),
+                "hide_viewport": bool(obj.hide_viewport),
+            }
+            for obj in target_objects
+        },
+        "view": _snapshot_view(view_context),
     }
 
 
-def _restore_state(state: dict[str, Any]) -> None:
+def _restore_state(
+    state: dict[str, Any],
+    view_context: dict[str, Any],
+) -> None:
     objects_by_name = _get_objects_by_name()
 
-    for name, hidden in state["target_visibility"].items():
+    for name, visibility in state["target_visibility"].items():
         obj = objects_by_name.get(name)
         if obj is not None:
-            obj.hide_set(bool(hidden))
+            obj.hide_set(bool(visibility["hidden"]))
+            obj.hide_viewport = visibility["hide_viewport"]
 
     selected_names = set(state["selected"])
     for obj in objects_by_name.values():
@@ -166,10 +265,12 @@ def _restore_state(state: dict[str, Any]) -> None:
     view_layer = bpy.context.view_layer
     if view_layer is not None:
         view_layer.objects.active = objects_by_name.get(active_name) if active_name else None
+    _restore_view(view_context, state["view"])
 
 
 def _ensure_visible(objects: list[Any]) -> None:
     for obj in objects:
+        obj.hide_viewport = False
         obj.hide_set(False)
 
 
@@ -189,6 +290,12 @@ def _capture_view3d(view_context: dict[str, Any], width: int | None, height: int
 
     try:
         with bpy.context.temp_override(**_make_override(view_context)):
+            screenshot_operator = bpy.ops.screen.screenshot_area
+            if not getattr(screenshot_operator, "poll")():
+                raise RuntimeError(
+                    "Viewport screenshot operator is unavailable in the current "
+                    "Blender context"
+                )
             bpy.ops.screen.screenshot_area(filepath=tmp_path)
 
         _screenshot._resize_image_file(tmp_path, width=width, height=height)
@@ -221,16 +328,15 @@ def capture_objects(
     """在同一 3D 视口中聚焦指定对象并截图。"""
     objects = _resolve_objects(names)
     view_context = _find_view3d_context()
-    state = _snapshot_state(objects)
+    state = _snapshot_state(objects, view_context)
 
     try:
         _ensure_visible(objects)
         _frame_objects(view_context, objects)
         return _capture_view3d(view_context, width=width, height=height)
     finally:
-        if state is not None:
-            _restore_state(state)
-            _update_view_layer()
+        _restore_state(state, view_context)
+        _update_view_layer()
 
 
 def capture_selection(

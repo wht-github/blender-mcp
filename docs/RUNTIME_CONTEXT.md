@@ -133,13 +133,15 @@ functions.capture_unmaterialed_meshes(width=1280)
 {
   "matches": [
     {
-      "id": "builtin.scene_info",
-      "summary": "查询对象、层级、选择和材质状态",
+      "id": "builtin.scene_info.find_objects",
+      "load_id": "builtin.scene_info",
+      "summary": "在当前 View Layer 中按类型、材质和修改器状态筛选对象",
       "score": 0.91
     },
     {
-      "id": "builtin.viewport",
-      "summary": "聚焦对象并截取当前 3D Viewport",
+      "id": "builtin.viewport.capture_objects",
+      "load_id": "builtin.viewport",
+      "summary": "聚焦对象并截图，随后恢复选择、可见性和视口构图",
       "score": 0.87
     }
   ]
@@ -153,6 +155,7 @@ functions.capture_unmaterialed_meshes(width=1280)
 - 未来安装的扩展能力。
 
 第一版使用名称、`SUMMARY`、`TAGS` 和关键词匹配，不引入 embedding 或向量数据库。
+模块和模块内操作均可参与搜索；操作结果使用 `load_id` 指向需要激活的 builtin。
 
 ### 2. 描述阶段
 
@@ -417,7 +420,10 @@ Runtime Context 仍运行任意 Python，因此不是沙箱。验证的目标是
 当前实现：
 
 - `BuiltinLoader` 通过 AST 读取 `SUMMARY`、`TAGS`、`SIDE_EFFECTS`、
-  `RESULT_TYPES` 和 `DESCRIPTION`，搜索和描述阶段都不会导入 builtin。
+  `RESULT_TYPES`、`OPERATIONS` 和 `DESCRIPTION`，搜索和描述阶段都不会导入
+  builtin。
+- `runtime.search()` 可以返回 `builtin.module.operation`；单操作描述只披露签名、
+  副作用、UI context 要求、成本和结果类型，`runtime.load()` 仍按模块激活。
 - eval 命名空间注入 `runtime` 与 `tools`；只有经过 `runtime.load()` 激活的
   builtin 才能通过 `tools.<name>` 访问。
 - `runtime.unload()` 只从当前逻辑可见空间移除能力，不删除 `sys.modules`。
@@ -425,7 +431,8 @@ Runtime Context 仍运行任意 Python，因此不是沙箱。验证的目标是
 - `get_builtin()` 与 `get_builtin_doc()` 继续兼容，并接入同一 Runtime Context。
 - 首次加载产生的完整文档绑定到对应任务结果，避免并发请求拿错文档。
 - 显式 `describe()` 后首次加载不会重复附加同一份完整文档。
-- 18 项运行时与 Streamable HTTP 自动化测试通过，其中 8 项直接覆盖 R1。
+- 24 项运行时与 Streamable HTTP 自动化测试通过，并增加 Blender 5.1 builtin
+  行为测试。
 
 ### R2：显式 Runtime Context
 

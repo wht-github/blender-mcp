@@ -67,7 +67,19 @@ def _make_exec_globals() -> dict:
             described = _runtime_context.describe(name)
         except ModuleNotFoundError as exc:
             return str(exc)
-        return described["capabilities"][0].get("description") or "(无文档)"
+        capability = described["capabilities"][0]
+        description = capability.get("description")
+        if description:
+            return description
+        if capability.get("kind") == "builtin_operation":
+            return (
+                f"{capability['signature']}\n"
+                f"{capability['summary']}\n"
+                f"side_effects={capability['side_effects']} "
+                f"requires_ui_context={capability['requires_ui_context']} "
+                f"cost={capability['cost']}"
+            )
+        return "(无文档)"
 
     if _runtime_context is None:
         raise RuntimeError("RuntimeContext not initialized")
@@ -260,6 +272,15 @@ class _ExecutionTask:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            error_code = None
+            error_message = None
+            if _is_error_result(self.result):
+                error = self.result["error"]
+                if isinstance(error, dict):
+                    error_code = error.get("code")
+                    error_message = error.get("message")
+                else:
+                    error_message = str(error)
             return {
                 "request_id": self.request_id,
                 "status": self.status,
@@ -270,6 +291,8 @@ class _ExecutionTask:
                 "execution_ms": self.execution_ms,
                 "code_summary": _code_summary(self.code),
                 "result_type": self.result_type,
+                "error_code": error_code,
+                "error_message": error_message,
                 "timeout_phase": self.timeout_phase,
                 "execution_continues": self.execution_continues,
             }
@@ -291,6 +314,21 @@ def get_task_history(limit: int = 10) -> list[dict[str, Any]]:
     with _history_lock:
         tasks = list(_task_history)[-safe_limit:] if safe_limit else []
     return [task.snapshot() for task in reversed(tasks)]
+
+
+def get_runtime_diagnostics(history_limit: int = 10) -> dict[str, Any]:
+    """Return compact execution and Runtime Context state for diagnostics builtins."""
+    with _history_lock:
+        history_count = len(_task_history)
+    return {
+        "queue": {
+            "pending": _pending_tasks.qsize(),
+            "capacity": _pending_tasks.maxsize,
+        },
+        "history_count": history_count,
+        "recent_tasks": get_task_history(history_limit),
+        "runtime": _runtime_context.list() if _runtime_context is not None else None,
+    }
 
 
 def clear_task_history() -> None:
