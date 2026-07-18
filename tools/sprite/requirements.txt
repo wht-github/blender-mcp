@@ -1,0 +1,8 @@
+# Lock file for the sprite-sheet splitter. Kept separate from the main
+# pyproject.toml so the blender_agent addon bundle never picks these up.
+# Install ad-hoc with:
+#     uv pip install -r tools/sprite/requirements.txt
+# or run the CLI in one-shot mode:
+#     uv run --with-requirements tools/sprite/requirements.txt \
+#            python tools/sprite/split.py <image>
+pillow>=10.4,<12
