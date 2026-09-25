@@ -2,7 +2,7 @@ bl_info = {
     "name": "Blender AI Agent (MCP)",
     "author": "blender-agent",
     "version": (0, 3, 0),
-    "blender": (4, 0, 0),
+    "blender": (5, 1, 0),
     "location": "View3D > Sidebar > AI Agent",
     "description": "MCP Server: expose Blender Python eval as a tool for AI agents",
     "category": "Interface",
@@ -11,6 +11,9 @@ bl_info = {
 import os
 import site
 import sys
+from pathlib import Path
+
+from .bundle_contract import validate_bundle
 
 
 # Runtime wheels are installed into this directory by package.py.  Using
@@ -19,6 +22,7 @@ import sys
 _libs_dir = os.path.join(os.path.dirname(__file__), "libs")
 _dll_handles = []
 if os.path.isdir(_libs_dir):
+    validate_bundle(Path(_libs_dir), addon_version=".".join(map(str, bl_info["version"])))
     site.addsitedir(_libs_dir)
     if _libs_dir in sys.path:
         sys.path.remove(_libs_dir)

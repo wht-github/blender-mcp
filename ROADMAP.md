@@ -1,6 +1,6 @@
 # Blender Agent Roadmap
 
-更新日期：2026-07-16
+更新日期：2026-09-25
 
 ## 产品定位
 
@@ -8,9 +8,9 @@ Blender Agent 是一个可信、本地优先的 Blender MCP 执行桥：外部 A
 对话、模型选择和 Agent 循环；插件负责把 MCP 请求可靠地调度到 Blender 主线程，
 执行 `bpy` 脚本并返回结构化结果或截图。
 
-项目的最高优先级是构建一个可按任务成长的 Runtime Context：Agent 在稳定、极小
-的 MCP 接口内搜索和按需加载 builtin，并将已经验证、可参数化的重复代码封装为
-runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONTEXT.md)。
+当前优先保证执行对象正确、断线可恢复、修改范围明确，并完成真实事件循环验证。
+Runtime Context 保留能力发现和按需加载；跨调用状态及 runtime function 先通过任务实验
+证明收益，再扩大实现。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONTEXT.md)。
 
 项目不计划重新内置 LLM 聊天客户端，也不把任意 Python 执行描述为安全沙箱。
 安全边界来自可信客户端、受限网络、用户确认、可观察性和可恢复性。
@@ -38,7 +38,7 @@ runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONT
 
 | 里程碑 | 建议周期 | 目标 | 发布判断 |
 |---|---:|---|---|
-| R：Runtime Context | 2–4 周 | 能力按需披露、加载和复用，Agent 可沉淀运行时函数 | R1 完成，R2 下一步 |
+| R：Runtime Context | 按实验结果 | 能力发现与最小复用原型 | R1 完成，R2–R4 由消融实验决定 |
 | M1：执行可靠性 | 1 周 | 所有请求有明确状态、错误和容量边界 | 可供个人日常使用 |
 | M2：安全与恢复 | 1–2 周 | 连接受控，场景修改可确认、可恢复 | 可邀请小范围测试 |
 | M3：测试与兼容 | 1–2 周 | 真实 Blender 任务可重复验证 | 可发布 Beta |
@@ -47,7 +47,7 @@ runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONT
 
 ## R：Runtime Context 与渐进式能力披露
 
-优先级：P0，当前最高
+优先级：P1；M1 执行边界、M2 恢复与 M3 验证优先
 
 目标不是动态堆积顶层 MCP tools，而是在 `eval_python_code` 的 Blender Python
 解释器环境内提供一个显式、可观察、可清理的 Runtime Context。
@@ -56,7 +56,7 @@ runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONT
 
 - `runtime.search/describe/load/unload/list`：按任务发现和加载最少 builtin。
 - `tools.<name>`：直接调用当前 runtime 已加载的 builtin。
-- `runtime.define/call/disable/delete`：把验证成功的重复代码封装为 runtime function。
+- 候选最小原型 `runtime.define/call/delete`：封装重复代码，显式启用；调用次数仅作统计。
 - `functions.<name>`：使用参数调用已封装函数，不重复生成完整 Python。
 - runtime ID、revision 和紧凑 manifest：在 stateless HTTP 调用之间显式延续状态。
 - runtime function 显式声明 builtin 依赖，不保存 Blender RNA 对象引用。
@@ -65,9 +65,9 @@ runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONT
 实施顺序：
 
 1. R1：统一能力目录与渐进披露（已完成，2026-07-16）。
-2. R2：显式 Runtime Context 和跨 eval 状态。
-3. R3：Runtime Function 定义、调用、依赖和生命周期。
-4. R4：用户批准的持久化与 builtin 晋升流程。
+2. R2：比较每次独立加载与跨调用状态，仅在收益明确时增加 runtime ID。
+3. R3：比较直接 eval+builtin 与 define/call/delete 原型，不自动标记 verified 或晋升。
+4. R4：持久化与 builtin 晋升延期，需正确性证据和明确用户需求。
 5. R5：仅在明确需要时发布为动态 MCP tool。
 
 退出标准：
@@ -114,6 +114,35 @@ runtime function。完整设计见 [`docs/RUNTIME_CONTEXT.md`](docs/RUNTIME_CONT
   Sidebar 收敛为当前任务、队列和最近结果，完整历史继续供诊断和测试使用。
 - 100 请求并发/容量边界测试无结果丢失或错配；10 项 M1 自动化测试连续通过 3 次，
   并通过 Blender 5.1 真实 Streamable HTTP smoke test。
+
+M1 可靠性补充（2026-09-12）：
+
+- HTTP 调用直接提交有界队列并异步等待，移除默认线程池中的隐藏排队；执行前再次
+  检查请求截止时间，避免等待协程尚未恢复时执行过期任务。
+- 主线程校验并复制返回值，拒绝 RNA/自定义对象、循环引用及超限结果。
+- HTTP 断开和协程取消会取消排队任务；运行中的 Python 继续记录实际完成状态。
+- 新增独立 `get_execution_status` 工具，查询不会被场景执行队列阻塞；迟到结果使用
+  有过期时间及容量限制的缓存，任务历史只保存小型状态快照。
+- 用户脚本 `SystemExit` 等异常被转换为执行错误；文档提取失败保留脚本实际结果，
+  队列收尾通过 `finally` 保证。停服时先关闭入口并取消队列，再等待 HTTP 退出。
+- 验证：40 项自动化测试连续通过 3 次（含真实 HTTP 并发、断开连接和停服），
+  并通过 Blender 5.1.0 打包后 MCP smoke 与 headless builtin 行为测试。
+  此轮未重跑交互式 VIEW_3D 截图成功路径。
+
+设计边界修正（2026-09-25）：
+
+- 任务绑定文档代次，文件加载前取消旧队列，加载失败后也恢复入口。
+- 客户端可预先指定请求 ID；保留窗口内去重、冲突检测和过期保护，无持久化承诺。
+- 业务数据与执行错误分离，MCP 返回固定结构化字段。
+- 每次 eval 独立加载状态；模块缓存共享，文档显式查询，不保存全局“已读”状态。
+- 共享材质数据默认拒绝修改，显式选择复制或共享作用域。
+- 打包复用依赖核对版本、平台和锁定依赖摘要；已验证组合收敛到 Blender 5.1 / Windows x64。
+- 增加真实事件循环、插件重启、文件切换和材质作用域测试；移除执行 timer 时事件循环测试必须失败。
+- 验证：60 项自动化测试连续三轮通过；Blender 5.1 打包 HTTP、builtin、文件加载与真实事件循环测试通过；定时器消融按预期失败，材质作用域 9 项通过。
+
+后续实验用同一组 golden tasks 比较固定能力索引与搜索流程、显式文档与隐式去重、
+直接 eval 与注册函数，记录成功率、修改范围、修复轮数、token 与端到端耗时。
+没有收益证据的状态管理和自动晋升机制不进入默认实现。
 
 ## M2：安全、确认与恢复
 

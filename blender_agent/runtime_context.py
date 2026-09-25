@@ -11,6 +11,28 @@ from .builtin_loader import BuiltinLoader, BuiltinMetadata
 
 
 _SEARCH_TOKEN = re.compile(r"[a-zA-Z0-9_]+|[\u3400-\u9fff]+")
+# Small vocabulary for common requests; Chinese bigrams cover literal summaries.
+_SEARCH_ALIASES = {
+    "查找": ("find", "filter"),
+    "筛选": ("find", "filter"),
+    "聚焦": ("focus",),
+    "截图": ("capture", "screenshot"),
+    "选中": ("selection",),
+    "材质": ("material",),
+    "修改器": ("modifier",),
+    "保存": ("save",),
+}
+
+
+def _search_tokens(query: str) -> list[str]:
+    tokens = _SEARCH_TOKEN.findall(query)
+    for token in tuple(tokens):
+        if "\u3400" <= token[0] <= "\u9fff":
+            tokens.extend(token[index:index + 2] for index in range(len(token) - 1))
+    for phrase, aliases in _SEARCH_ALIASES.items():
+        if phrase in query:
+            tokens.extend(aliases)
+    return list(dict.fromkeys(tokens))
 
 
 class CapabilityRegistry:
@@ -24,7 +46,7 @@ class CapabilityRegistry:
         if not query:
             return []
 
-        tokens = _SEARCH_TOKEN.findall(query)
+        tokens = _search_tokens(query)
         ranked: list[tuple[float, str, dict[str, Any]]] = []
         for metadata in self._loader.list_metadata():
             score = self._score(
@@ -41,7 +63,7 @@ class CapabilityRegistry:
                 operation_score = self._score(
                     operation.name,
                     operation.capability_id,
-                    (*metadata.tags, *operation.tags),
+                    operation.tags,
                     operation.summary,
                     query,
                     tokens,
@@ -49,7 +71,9 @@ class CapabilityRegistry:
                 if operation_score > 0:
                     ranked.append(
                         (
-                            operation_score + 2,
+                            operation_score + 2 + 0.25 * self._score(
+                                "", "", metadata.tags, "", query, tokens
+                            ),
                             operation.capability_id,
                             operation.as_dict(),
                         )
@@ -59,7 +83,9 @@ class CapabilityRegistry:
         safe_limit = max(1, min(int(limit), 20))
         return [
             {
-                **item,
+                "id": item["id"],
+                "load_id": item.get("load_id", item["id"]),
+                "summary": item["summary"],
                 "score": round(score, 3),
             }
             for score, _capability_id, item in ranked[:safe_limit]
@@ -79,7 +105,6 @@ class CapabilityRegistry:
                         include_description=True
                     )
                 )
-        self._loader.mark_descriptions_shown(*capability_ids)
         return descriptions
 
     def load_module(self, capability_id: str) -> ModuleType:
@@ -122,7 +147,7 @@ class CapabilityRegistry:
                 score += 10
             if token in lowered_tags:
                 score += 8
-            elif any(token in tag or tag in token for tag in lowered_tags):
+            elif any(token in tag for tag in lowered_tags):
                 score += 5
             if token in summary:
                 score += 3
@@ -132,7 +157,7 @@ class CapabilityRegistry:
 
 @dataclass
 class RuntimeContext:
-    """R1 default context; R2 will add explicit IDs and multiple instances."""
+    """Activation state for one eval; module imports are cached by the loader."""
 
     registry: CapabilityRegistry
     revision: int = 0

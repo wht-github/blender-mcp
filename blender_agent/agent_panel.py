@@ -181,7 +181,10 @@ def _draw_task_history_item(layout, task):
     box.label(text=timing)
     box.label(text=task["code_summary"])
     if task["execution_continues"]:
-        box.label(text="客户端已超时，Python 仍在执行", icon="ERROR")
+        box.label(text="客户端已停止等待，Python 仍在执行", icon="ERROR")
+    elif status in {"timed_out", "cancelled"} and task.get("execution_status") in {"succeeded", "failed"}:
+        final_status = task["execution_status"]
+        box.label(text=f"实际执行结果：{final_status}", icon=_STATUS_ICONS[final_status])
 
 
 # ── 注册 ─────────────────────────────────────────────────────────────────────

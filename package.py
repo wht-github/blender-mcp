@@ -11,7 +11,7 @@ import zipfile
 import argparse
 from pathlib import Path
 
-from bundle_dependencies import bundle_runtime_dependencies
+from bundle_dependencies import ROOT, bundle_runtime_dependencies, validate_existing_bundle
 
 
 def create_addon_zip(
@@ -23,7 +23,7 @@ def create_addon_zip(
 ):
     """将 blender_agent/ 目录打包为 zip 文件"""
     
-    addon_dir = Path("blender_agent")
+    addon_dir = ROOT / "blender_agent"
     if not addon_dir.exists():
         raise FileNotFoundError(f"找不到目录: {addon_dir}")
 
@@ -33,22 +33,14 @@ def create_addon_zip(
             python_platform=python_platform,
         )
 
-    libs_dir = addon_dir / "libs"
-    if not libs_dir.exists() or not any(libs_dir.iterdir()):
-        raise RuntimeError(
-            "blender_agent/libs is missing. Run without --skip-dependencies "
-            "to bundle the MCP runtime."
-        )
+    validate_existing_bundle(python_version, python_platform)
     
-    # 如果输出文件已存在，先删除
     output = Path(output_path)
-    if output.exists():
-        output.unlink()
-        print(f"已删除旧文件: {output}")
+    temporary = output.with_suffix(output.suffix + ".tmp")
 
     # 创建 zip 文件
     dependency_file_count = 0
-    with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_DEFLATED) as zf:
         for file_path in addon_dir.rglob("*"):
             if file_path.is_file():
                 # 跳过 __pycache__ 和 .pyc 文件
@@ -62,6 +54,7 @@ def create_addon_zip(
                 else:
                     print(f"  添加: {arcname}")
     
+    temporary.replace(output)
     file_size = output.stat().st_size / 1024  # KB
     print(f"  运行时依赖: {dependency_file_count} 个文件")
     print(f"\n打包完成: {output} ({file_size:.1f} KB)")

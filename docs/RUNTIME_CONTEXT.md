@@ -1,7 +1,7 @@
 # Runtime Context 与渐进式能力披露
 
-状态：R1 已实现，R2 待开始
-更新日期：2026-07-16
+状态：R1 已实现；R2 及以后先做收益实验，暂不扩展状态机
+更新日期：2026-09-25
 
 ## 目标
 
@@ -18,20 +18,22 @@ Blender Python 解释器内部提供一个可按任务成长的 Runtime Context�
        ├── 按需加载 builtin
        ├── 渐进披露文档
        ├── 卸载当前不需要的能力
-       └── 保存经过验证的可复用函数
+       └── 可复用函数原型（待实验）
 ```
 
 Agent 应优先复用已有能力，只在缺少合适能力时使用裸 `bpy` 探索。成功且可泛化的
-探索代码可以在当前 runtime 中封装为函数，减少后续代码生成、上下文消耗和 API
-猜测。
+探索代码是否值得封装为跨调用函数，需要用真实任务验证代码生成、上下文消耗和
+修复次数的收益。当前实现不保存跨 eval 的函数或加载状态。
 
 ## 产品边界
 
-- MCP 顶层保持稳定，第一阶段仍只暴露 `eval_python_code`。
+- MCP 场景执行入口保持为 `eval_python_code`；`get_execution_status` 是独立的状态
+  查询工具，不经过执行队列，也不参与动态能力扩展。
 - 动态加载、卸载和函数封装发生在解释器 Runtime Context 内部。
 - builtin 是经过项目维护和测试的正式能力。
 - runtime function 是 Agent 在执行过程中创建的可复用组合能力。
-- runtime function 多次验证、完成泛化和测试后，才可能晋升为正式 builtin。
+- 执行成功次数只是统计，不能证明几何结果正确或函数可泛化。正式 builtin 仍需
+  独立的行为验证和代码评审。
 - Runtime Context 不是安全沙箱；任意 Python 仍具有 Blender 和本机权限。
 - Blender UI 只负责连接、当前执行状态、确认和恢复，不承担能力或代码历史浏览。
 
@@ -49,9 +51,15 @@ MCP 和当前 Python SDK 支持动态增加、移除 tool 以及
 因此，动态 MCP tool 发布只作为未来的可选晋升机制；基础调用始终可通过
 `eval_python_code` 和 Runtime Context 完成。
 
-## Runtime Context 目标数据模型
+## 当前状态边界与后续模型
 
-R2 起每个 runtime 使用显式 ID 标识，不能依赖 HTTP 连接代表会话：
+每次 eval 创建独立的 Runtime Context 和临时命名空间。`runtime.load()` 和
+`runtime.unload()` 只改变这次执行的 `tools` 可见范围；下一次执行必须重新 load。
+`BuiltinLoader` 只管理静态能力目录与进程内模块缓存，不保存客户端、文档已读或
+执行记录。重复 load 复用模块对象，避免重复导入，但不复用逻辑加载状态。
+
+只有收益实验通过后，才考虑为跨调用函数增加显式 `runtime_id`。不能依赖 HTTP
+连接代表会话，也不能仅添加 ID 而继续共享函数或加载状态。以下是待验证的模型：
 
 ```python
 @dataclass
@@ -86,7 +94,7 @@ class RuntimeContext:
 
 ## 解释器接口
 
-完整 Runtime Context 计划提供以下接口；R1 已实现前五个能力管理接口：
+R1 已实现前五个能力管理接口。`define/call/delete` 仅为后续实验原型：
 
 ```python
 runtime.search(query, limit=5)
@@ -101,9 +109,9 @@ runtime.define(
     source,
     requires=[],
     tags=[],
+    enabled=False,
 )
 runtime.call(name, **arguments)
-runtime.disable(name)
 runtime.delete(name)
 ```
 
@@ -148,68 +156,68 @@ functions.capture_unmaterialed_meshes(width=1280)
 }
 ```
 
-搜索范围包括：
+当前搜索范围为项目内置 builtin。后续有明确需求时再扩展：
 
-- 项目内置 builtin；
 - 当前 runtime 中的自定义函数；
 - 未来安装的扩展能力。
 
-第一版使用名称、`SUMMARY`、`TAGS` 和关键词匹配，不引入 embedding 或向量数据库。
-模块和模块内操作均可参与搜索；操作结果使用 `load_id` 指向需要激活的 builtin。
+使用名称、`SUMMARY`、`TAGS` 和关键词匹配，不引入 embedding 或向量数据库。
+中文查询使用相邻双字片段和少量常见词映射；操作自身的标签比继承的模块标签
+权重更高。模块和模块内操作均可参与搜索；结果只包含 `id`、`load_id`、
+`summary`、`score`，签名和副作用由 describe 按需返回。
 
 ### 2. 描述阶段
 
-只有调用 `runtime.describe()` 或首次 `runtime.load()` 时才披露：
+文档只通过显式查询返回，不记录“已经读过”的状态：
 
-- 精确函数签名；
-- 参数和结果结构；
-- 一至两个规范示例；
-- 是否修改场景；
-- 依赖和常见错误。
+- `runtime.describe('builtin.module.operation')` 返回完整签名、摘要、副作用、
+  UI context 要求、成本和结果类型。
+- `runtime.describe('builtin.module')` 返回完整模块文档，包括参数、示例和限制。
+- 重复 describe 始终可用；描述一个操作不会影响之后读取模块文档。
+- `runtime.load()` 只激活模块，不自动附加文档。
 
 `eval_python_code` 的固定 description 不再枚举全部 builtin SUMMARY，只说明如何
 搜索、加载和使用 Runtime Context，避免 builtin 增长持续扩大常驻上下文。
 
 ### 3. 使用阶段
 
-加载操作把能力挂入当前 runtime：
+加载与使用发生在同一次 eval：
 
 ```python
-__result__ = runtime.load(
+runtime.load(
     "builtin.scene_info",
     "builtin.viewport",
 )
-```
-
-后续调用无需重复获取模块：
-
-```python
 names = tools.scene_info.find_objects(type="MESH", no_material=True)
 image = tools.viewport.capture_objects(names, width=1024)
 __result__ = tools.viewport.as_result(image, objects=names)
 ```
+
+下一次 eval 如需继续使用这些能力，应再次调用 `runtime.load()`。模块缓存会复用，
+但上一轮或另一客户端的 load/unload 不会改变本轮可见能力。
 
 ### 4. 卸载阶段
 
 `runtime.unload()` 只进行逻辑卸载：
 
 - 从 `tools` 可见空间移除；
-- 从当前 runtime 的直接活跃能力中删除；
-- 不再重复披露其文档。
+- 从本次执行的直接活跃能力中删除。
 
 不要频繁删除 `sys.modules` 或销毁模块对象，因为 runtime function 和其他代码可能
 仍然持有依赖。函数执行时声明的依赖可以临时重新激活。
 
-## Runtime Function
+## Runtime Function 原型（未实现）
 
 ### 定义
 
-Agent 在代码已经成功执行并确认可复用后，可以注册函数：
+实验阶段仅提供 `define/call/delete`，定义时通过 `enabled=True` 显式启用。
+不会根据成功或失败次数自动启用、禁用或晋升。以下示例为拟议接口：
 
 ```python
 __result__ = runtime.define(
     name="capture_unmaterialed_meshes",
     description="查找没有材质的 Mesh 并聚焦截图",
+    enabled=True,
     tags=["mesh", "material", "viewport", "diagnostics"],
     requires=[
         "builtin.scene_info",
@@ -251,7 +259,7 @@ class RuntimeFunction:
     source: str
     source_hash: str
     signature: str
-    status: str
+    enabled: bool
     success_count: int
     failure_count: int
     created_at: float
@@ -275,32 +283,19 @@ functions.capture_unmaterialed_meshes()
 runtime function 不得保存 `bpy.types.Object` 等 RNA 对象引用；需要跨调用定位对象时
 只保存名称、ID 或其他普通 JSON 数据，并在调用时重新查询。
 
-### 生命周期
+### 启用与验证
 
-```text
-draft → verified → active → persistent
-           │          │
-           └──────────┴──→ disabled
-```
+函数只有显式启用后才能调用。成功/失败次数和最后一次错误用于诊断，不产生
+`verified` 或 `active` 之类的正确性承诺，也不在连续失败两次后自动禁用。
+未抛异常可能仍生成错误几何；场景条件不满足也可能使正确函数失败。
 
-- `draft`：刚定义，只能显式调用。
-- `verified`：至少成功执行一次。
-- `active`：可以被 `runtime.search()` 自动发现。
-- `persistent`：写入 Blender 用户配置目录，重启后仍存在。
-- `disabled`：保留定义和统计，但禁止执行。
-
-建议策略：
-
-- 一次成功后进入 `verified`；
-- 两至三次成功后可以自动进入 `active`；
-- 连续失败两次自动禁用；
-- 只有用户明确批准才能进入 `persistent`；
-- 未持久化函数随 runtime 过期而释放。
+验证必须针对函数承诺的结果，例如对象属性、几何约束或截图，并覆盖不同场景。
+持久化、跨客户端发现和晋升单独延期；实验函数随所属 runtime 清理。
 
 不要将 runtime function 存入 `.blend`，避免污染项目、Undo、版本控制，以及打开陌生
 文件时加载不可信代码。
 
-## Agent 决策策略
+## Agent 决策策略（函数原型阶段）
 
 固定说明中应明确要求 Agent 遵循以下优先级：
 
@@ -331,19 +326,18 @@ runtime.define
 7. 不封装尚未验证或无法清楚描述副作用的代码。
 8. 任务完成后可以卸载不再需要的直接 builtin。
 
-满足以下任意两个条件时，Agent 可以自主创建 runtime function：
+是否注册函数由重复任务中的实际收益决定，以下仅作为判断线索，不以执行次数或
+代码行数作为自动门槛：
 
-- 相似代码已成功运行两次；
-- 代码超过约 15–20 行；
 - 涉及容易出错的 `bpy.ops` context；
 - 输入和输出可以清楚参数化；
 - 当前任务很可能再次使用；
-- 组合了两个以上 builtin；
 - 已通过结构化结果或截图验证。
 
-## Runtime 标识与结果 manifest
+## Runtime 标识与结果 manifest（待收益实验）
 
-由于 Streamable HTTP 当前为 stateless 模式，跨调用必须显式传递 runtime ID：
+当前每次 eval 独立，没有 runtime ID。若实验支持引入跨调用状态，必须显式传递
+runtime ID，并将函数、权限范围和过期清理归属于该 ID：
 
 ```python
 eval_python_code(
@@ -395,8 +389,8 @@ Runtime Context 仍运行任意 Python，因此不是沙箱。验证的目标是
 - 所有调用继续经过 M1 FIFO、request ID、状态和超时机制；
 - 运行结果不得返回 Blender RNA 对象；
 - runtime function 不能覆盖系统名称、builtin 或其他版本；
-- 所有定义、调用、禁用和持久化操作进入诊断记录；
-- 持久化和高风险调用纳入 M2 用户确认与 checkpoint。
+- 所有定义、调用和删除操作进入诊断记录；
+- 连接认证、恢复和端到端验证先于持久化扩展。
 
 ## 实施阶段
 
@@ -415,7 +409,7 @@ Runtime Context 仍运行任意 Python，因此不是沙箱。验证的目标是
 
 - 增加任意数量 builtin 不会线性扩大常驻 MCP tool description。
 - Agent 能通过搜索和描述找到正确 builtin，无需猜测函数名。
-- 未加载 builtin 不向当前 runtime 披露完整文档。
+- 完整文档只由显式 describe 获取，不受其他调用或客户端的读取历史影响。
 
 当前实现：
 
@@ -429,12 +423,26 @@ Runtime Context 仍运行任意 Python，因此不是沙箱。验证的目标是
 - `runtime.unload()` 只从当前逻辑可见空间移除能力，不删除 `sys.modules`。
 - `eval_python_code` 的固定 description 只说明发现协议，不再枚举 builtin。
 - `get_builtin()` 与 `get_builtin_doc()` 继续兼容，并接入同一 Runtime Context。
-- 首次加载产生的完整文档绑定到对应任务结果，避免并发请求拿错文档。
-- 显式 `describe()` 后首次加载不会重复附加同一份完整文档。
-- 24 项运行时与 Streamable HTTP 自动化测试通过，并增加 Blender 5.1 builtin
-  行为测试。
+- 每次 eval 新建 Runtime Context；加载状态只属于当前执行，模块缓存属于进程。
+- 去除 loader 中的文档已读和本次加载记录，load 不再自动附加文档。
+- 自动化测试覆盖中文真实查询、操作签名、重复文档读取和调用间加载隔离。
+
+### 进入 R2 前：消融实验
+
+用同一组真实 Blender 任务比较，记录成功率、总 token、调用轮数和修复次数：
+
+| 对照 | 要回答的问题 |
+| --- | --- |
+| 简短能力索引 / search + describe + load | 能力发现是否提高成功率并减少总成本？ |
+| 显式文档与每次独立加载 / 隐式已读与跨调用加载 | 节省的上下文是否足以抵偿会话状态复杂度？ |
+| eval + builtin / define + call + delete 原型 | 函数复用是否减少重复代码和修复次数？ |
+
+先完成连接认证、请求恢复及真实 Blender 事件循环端到端验证，再进行函数原型。
+实验没有明确收益就保留当前较小的接口，不按预定阶段强行增加状态管理。
 
 ### R2：显式 Runtime Context
+
+状态：延期，只有跨调用函数收益实验通过后才实施。
 
 - 新增 runtime ID、revision、过期和清理机制。
 - 每次 eval 使用干净临时 namespace。
@@ -450,10 +458,10 @@ Runtime Context 仍运行任意 Python，因此不是沙箱。验证的目标是
 
 ### R3：Runtime Function
 
-- 实现 `define()`、`call()`、`disable()` 和 `delete()`。
+- 先实现 `define()`、`call()` 和 `delete()` 原型，定义时显式启用。
 - 增加 AST、签名、依赖、版本和结果验证。
-- 实现 `functions` 代理。
-- 记录成功/失败统计，并按规则更新生命周期。
+- 原型只通过 `runtime.call()` 调用；`functions` 代理待收益明确后再考虑。
+- 成功/失败只记录统计；不自动验证、启用、禁用或晋升。
 
 退出标准：
 
@@ -462,6 +470,8 @@ Runtime Context 仍运行任意 Python，因此不是沙箱。验证的目标是
 - 函数不能保存或返回失效的 Blender RNA 引用。
 
 ### R4：持久化与晋升
+
+状态：延期，需原型收益、场景行为验证和明确使用需求，不由调用次数触发。
 
 - 经用户批准后将函数保存到 Blender 用户配置目录。
 - 启动时只读取和验证定义，不自动执行函数代码。

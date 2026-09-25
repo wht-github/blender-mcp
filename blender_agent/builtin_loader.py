@@ -6,7 +6,7 @@ builtin_loader.py — Builtins 发现与懒加载管理器
   TAGS         = ["scene", ...]      # capability search 索引
   SIDE_EFFECTS = "read|write|mixed"  # 能力副作用提示
   RESULT_TYPES = ["text", ...]       # 典型结果类型
-  DESCRIPTION  = "完整 API 文档..."  # describe/load 时才披露
+  DESCRIPTION  = "完整 API 文档..."  # describe 显式读取
 
 目录约定：
   builtins/*.py  每个文件是一个独立 builtin 模块
@@ -84,9 +84,7 @@ class BuiltinLoader:
     def __init__(self):
         self._registry: dict[str, Path] = {}        # name -> .py path
         self._loaded: dict[str, ModuleType] = {}    # name -> module
-        self._descriptions_shown: set[str] = set()  # 已展示 description 的模块名
         self._metadata: dict[str, BuiltinMetadata] = {}
-        self._newly_loaded: list[str] = []          # Fix1: 本次 eval 调用中首次加载的模块
 
         self._discover()
 
@@ -151,7 +149,6 @@ class BuiltinLoader:
         spec.loader.exec_module(module)
 
         self._loaded[name] = module
-        self._newly_loaded.append(name)   # Fix1: 追踪本次调用中的新加载
         return module
 
     def normalize_name(self, name: str) -> str:
@@ -199,24 +196,6 @@ class BuiltinLoader:
     def loaded_names(self) -> list[str]:
         return list(self._loaded)
 
-    def mark_descriptions_shown(self, *names: str) -> None:
-        """Record explicit describe() disclosure so load() does not repeat it."""
-        self._descriptions_shown.update(self.normalize_name(name) for name in names)
-
-    def get_pending_descriptions(self) -> list[str]:
-        """
-        返回已加载但尚未展示 DESCRIPTION 的模块文档列表（后备方法）。
-        主路径请使用 get_newly_loaded_descriptions()，它在同一轮 tool result 中注入。
-        """
-        pending = []
-        for name, module in self._loaded.items():
-            if name not in self._descriptions_shown:
-                desc = getattr(module, "DESCRIPTION", None)
-                if desc:
-                    pending.append(f"[builtin: {name}]\n{desc}")
-                self._descriptions_shown.add(name)
-        return pending
-
     def peek_description(self, name: str) -> Optional[str]:
         """
         读取指定 builtin 的 DESCRIPTION，不加载模块。
@@ -226,43 +205,11 @@ class BuiltinLoader:
             name = self.normalize_name(name)
         except ModuleNotFoundError:
             return None
-        if name in self._loaded:
-            return getattr(self._loaded[name], "DESCRIPTION", None)
         return self._metadata[name].description
-
-    def begin_call(self):
-        """在每次代码执行前调用，重置本次 eval 的新加载记录（Fix1）。"""
-        self._newly_loaded.clear()
-
-    def get_newly_loaded_descriptions(self) -> list[str]:
-        """
-        返回本次 eval 调用中首次加载的 builtin 的 DESCRIPTION（Fix1）。
-        在代码执行后立即调用，将文档附加进同一轮 tool result，
-        让模型下次写代码时已持有正确的 API 签名，无需再多一轮往返。
-        """
-        docs = []
-        for name in self._newly_loaded:
-            if name not in self._descriptions_shown:
-                desc = getattr(self._loaded[name], "DESCRIPTION", None)
-                if desc:
-                    docs.append(f"[builtin: {name} — API 文档]\n{desc}")
-                self._descriptions_shown.add(name)
-        return docs
-
-    def reset_session(self):
-        """
-        新对话开始时重置全部会话状态（Fix3）。
-        清除已加载模块缓存，避免上轮会话的 builtins 在新对话首轮污染上下文。
-        """
-        self._loaded.clear()
-        self._descriptions_shown.clear()
-        self._newly_loaded.clear()
 
     def reload(self):
         """重新扫描目录（开发时热重载用）。"""
         self._loaded.clear()
-        self._descriptions_shown.clear()
-        self._newly_loaded.clear()
         self._discover()
 
     @staticmethod

@@ -64,10 +64,12 @@ def main() -> None:
                             "eval_python_code",
                             {
                                 "code": (
+                                    "import threading\n"
                                     "matches = runtime.search('scene hierarchy')['matches']\n"
                                     "runtime.load('builtin.scene_info')\n"
                                     "__result__ = {\n"
                                     "    'blender': bpy.app.version_string,\n"
+                                    "    'main_thread': threading.current_thread() is threading.main_thread(),\n"
                                     "    'found': any(\n"
                                     "        item['id'] == 'builtin.scene_info'\n"
                                     "        or item.get('load_id') == 'builtin.scene_info'\n"
@@ -88,6 +90,22 @@ def main() -> None:
                             for item in result.content
                             if item.type == "text"
                         )
+                        for code, expected in (
+                            ("__result__ = bpy.context.active_object", "INVALID_RESULT"),
+                            ("raise SystemExit(0)", "EXECUTION_ERROR"),
+                        ):
+                            rejected = await session.call_tool("eval_python_code", {"code": code})
+                            if not rejected.isError or expected not in str(rejected.content):
+                                raise AssertionError(f"Execution boundary failed: {rejected}")
+                        recovered = await session.call_tool("eval_python_code", {"code": "__result__ = 42"})
+                        if recovered.isError:
+                            raise AssertionError(f"Execution did not recover: {recovered}")
+                        request_id = recovered.structuredContent["request_id"]
+                        state = await session.call_tool(
+                            "get_execution_status", {"request_id": request_id, "include_result": True}
+                        )
+                        if state.isError or "succeeded" not in str(state.content):
+                            raise AssertionError(f"Final result lookup failed: {state}")
 
             try:
                 asyncio.run(call_tool())
@@ -114,6 +132,8 @@ def main() -> None:
                 raise AssertionError(f"Unexpected MCP result: {combined}")
             if '"found": true' not in combined:
                 raise AssertionError(f"Capability search failed: {combined}")
+            if '"main_thread": true' not in combined:
+                raise AssertionError(f"Execution escaped Blender main thread: {combined}")
             if '"builtin.scene_info"' not in combined:
                 raise AssertionError(f"Capability load failed: {combined}")
             print(f"BLENDER_AGENT_SMOKE_OK {combined}")
